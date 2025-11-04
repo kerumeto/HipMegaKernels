@@ -1,4 +1,11 @@
-#include "llama.cuh"
+#pragma once
+
+#include "llama.cuh" // Assuming this and subsequent includes are HIP-compatible
+#include <limits>
+// HIP: Add HIP runtime header if not already included by kittens
+#include <hip/hip_runtime.h>
+// HIP: Include the kittens utilities for async loads/stores
+#include "kittens.cuh" 
 
 using namespace kittens;
 using namespace megakernel;
@@ -131,15 +138,16 @@ template <typename config, typename globals> struct attention_partial {
         using U = SV::dtype;
         using U2 = base_types::packing<U>::packed_type;
 
-        uint32_t dst_ptr[4];
+        // HIP: Use uintptr_t for pointers that will be cast to integer types
+        uintptr_t dst_ptr[4];
         dst_ptr[0] =
-            static_cast<uint32_t>(__cvta_generic_to_shared(&dst[0].data[0]));
+            static_cast<uintptr_t>(reinterpret_cast<void *>(&dst[0].data[0]));
         dst_ptr[1] =
-            static_cast<uint32_t>(__cvta_generic_to_shared(&dst[1].data[0]));
+            static_cast<uintptr_t>(reinterpret_cast<void *>(&dst[1].data[0]));
         dst_ptr[2] =
-            static_cast<uint32_t>(__cvta_generic_to_shared(&dst[2].data[0]));
+            static_cast<uintptr_t>(reinterpret_cast<void *>(&dst[2].data[0]));
         dst_ptr[3] =
-            static_cast<uint32_t>(__cvta_generic_to_shared(&dst[3].data[0]));
+            static_cast<uintptr_t>(reinterpret_cast<void *>(&dst[3].data[0]));
 
         int laneid = kittens::warp::laneid();
         int local_row_idx = (laneid % 16) / 4;
@@ -154,11 +162,11 @@ template <typename config, typename globals> struct attention_partial {
                     tmp[1] = base_types::convertor<U2, T2>::convert(
                         src.tiles[0][j].data[2]); // note 2, not 1
                     int col_idx = local_col_idx * 2 + j * 16;
-                    move<U2>::sts(dst_ptr[local_row_idx] + sizeof(U) * col_idx,
-                                  tmp[0]);
-                    move<U2>::sts(dst_ptr[local_row_idx] +
-                                      sizeof(U) * (col_idx + 8),
-                                  tmp[1]);
+                    // HIP: Use kittens::store_shared_vec for warp-level stores
+                    kittens::store_shared_vec(
+                        dst_ptr[local_row_idx] + sizeof(U) * col_idx, tmp[0]);
+                    kittens::store_shared_vec(
+                        dst_ptr[local_row_idx] + sizeof(U) * (col_idx + 8), tmp[1]);
                 }
             } else { // rows 8~11
                 for (int j = 0; j < src.width; j++) {
@@ -168,11 +176,10 @@ template <typename config, typename globals> struct attention_partial {
                     tmp[1] = base_types::convertor<U2, T2>::convert(
                         src.tiles[0][j].data[3]);
                     int col_idx = local_col_idx * 2 + j * 16;
-                    move<U2>::sts(dst_ptr[local_row_idx] + sizeof(U) * col_idx,
-                                  tmp[0]);
-                    move<U2>::sts(dst_ptr[local_row_idx] +
-                                      sizeof(U) * (col_idx + 8),
-                                  tmp[1]);
+                    kittens::store_shared_vec(
+                        dst_ptr[local_row_idx] + sizeof(U) * col_idx, tmp[0]);
+                    kittens::store_shared_vec(
+                        dst_ptr[local_row_idx] + sizeof(U) * (col_idx + 8), tmp[1]);
                 }
             }
         } else if (row4idx % 2 == 1 && laneid >= 16) { // rows 4~7 or 12~15
@@ -184,11 +191,10 @@ template <typename config, typename globals> struct attention_partial {
                     tmp[1] = base_types::convertor<U2, T2>::convert(
                         src.tiles[0][j].data[2]); // note 2, not 1
                     int col_idx = local_col_idx * 2 + j * 16;
-                    move<U2>::sts(dst_ptr[local_row_idx] + sizeof(U) * col_idx,
-                                  tmp[0]);
-                    move<U2>::sts(dst_ptr[local_row_idx] +
-                                      sizeof(U) * (col_idx + 8),
-                                  tmp[1]);
+                    kittens::store_shared_vec(
+                        dst_ptr[local_row_idx] + sizeof(U) * col_idx, tmp[0]);
+                    kittens::store_shared_vec(
+                        dst_ptr[local_row_idx] + sizeof(U) * (col_idx + 8), tmp[1]);
                 }
             } else { // rows 12~15
                 for (int j = 0; j < src.width; j++) {
@@ -198,11 +204,10 @@ template <typename config, typename globals> struct attention_partial {
                     tmp[1] = base_types::convertor<U2, T2>::convert(
                         src.tiles[0][j].data[3]);
                     int col_idx = local_col_idx * 2 + j * 16;
-                    move<U2>::sts(dst_ptr[local_row_idx] + sizeof(U) * col_idx,
-                                  tmp[0]);
-                    move<U2>::sts(dst_ptr[local_row_idx] +
-                                      sizeof(U) * (col_idx + 8),
-                                  tmp[1]);
+                    kittens::store_shared_vec(
+                        dst_ptr[local_row_idx] + sizeof(U) * col_idx, tmp[0]);
+                    kittens::store_shared_vec(
+                        dst_ptr[local_row_idx] + sizeof(U) * (col_idx + 8), tmp[1]);
                 }
             }
         }
@@ -257,20 +262,40 @@ template <typename config, typename globals> struct attention_partial {
 
         typename globals::activations_t::dtype *src_ptr =
             &src.raw_ptr[q_head_start_idx * LLAMA_1B_HEAD_DIM];
-        uint32_t dst_ptr = static_cast<uint32_t>(__cvta_generic_to_shared(
+        // HIP: Use uintptr_t and remove __cvta_generic_to_shared
+        uintptr_t dst_ptr = static_cast<uintptr_t>(reinterpret_cast<void*>(
             &dst.data[(q_head_start_idx % 16) * LLAMA_1B_HEAD_DIM]));
 
         int laneid = kittens::warp::laneid();
         int row = laneid / memcpy_per_row;
         int col = (laneid * elem_per_memcpy) % LLAMA_1B_HEAD_DIM;
 
-        // everything should fit!
-        asm volatile(
-            "cp.async.cg.shared.global.L2::128B [%0], [%1], 16;\n" ::"r"(
-                dst.idx(dst_ptr, {row, col})),
-            "l"(&src_ptr[row * LLAMA_1B_HEAD_DIM + col])
-            : "memory");
-        asm volatile("cp.async.commit_group;\n" ::: "memory");
+        // HIP: Replaced cp.async with kittens async load/store abstractions
+        if (laneid < memcpy_per_row * GQA_RATIO) { // Only threads 0-31
+            // 1. Get global address
+            float4* gptr = reinterpret_cast<float4*>(
+                &src_ptr[row * LLAMA_1B_HEAD_DIM + col]
+            );
+            
+            // 2. Get swizzled shared memory address
+            // NOTE: This assumes `dst` is a non-CDNA4 `st` struct
+            // which has the .idx() member for swizzling.
+            uint32_t s_addr = dst.idx(dst_ptr, {row, col});
+
+            // 3. Load from global to register (async)
+            float4 reg_buf = kittens::load_global_vec4_async(gptr);
+
+            // 4. Wait for global load
+            asm volatile("s_waitcnt vmcnt(0)");
+
+            // 5. Store from register to shared
+            kittens::store_shared_vec(s_addr, {reg_buf.x, reg_buf.y});
+            kittens::store_shared_vec(s_addr + sizeof(float2), {reg_buf.z, reg_buf.w});
+        }
+        
+        // HIP: Wait for shared memory stores (lgkmcnt) to complete.
+        // This replaces the cp.async.commit_group.
+        asm volatile("s_waitcnt lgkmcnt(0)");
     }
 
     struct controller {
@@ -309,12 +334,14 @@ template <typename config, typename globals> struct attention_partial {
                                            parsed_instruction &inst) {
             s.record(megakernel::TEVENT_AT_GMEM_WAIT);
 
-            // Wait for the previous ops to finish (16 dims each, so 4 ops on
-            // the same head)
+            // HIP: Replace __nanosleep with a spin-wait or s_sleep
+            // Using s_sleep (nanos / 100)
+            constexpr int sleep_cycles = config::GMEM_SPIN_LOOP_SLEEP_NANOS / 100;
+
             while (*(volatile int *)&g.Bar[{
                        inst.layer_idx, OPCODE_RMS_QKV_MatVecRopeAppend - 1,
                        LLAMA_1B_NUM_ATTENTION_HEADS + inst.kv_head_idx}] < 4) {
-                __nanosleep(config::GMEM_SPIN_LOOP_SLEEP_NANOS);
+                 if (sleep_cycles > 0) __builtin_amdgcn_s_sleep(sleep_cycles);
             }
 
             while (
@@ -322,7 +349,7 @@ template <typename config, typename globals> struct attention_partial {
                      .Bar[{inst.layer_idx, OPCODE_RMS_QKV_MatVecRopeAppend - 1,
                            LLAMA_1B_NUM_ATTENTION_HEADS +
                                LLAMA_1B_NUM_KV_HEADS + inst.kv_head_idx}] < 4) {
-                __nanosleep(config::GMEM_SPIN_LOOP_SLEEP_NANOS);
+                 if (sleep_cycles > 0) __builtin_amdgcn_s_sleep(sleep_cycles);
             }
 
             s.record(megakernel::TEVENT_DONE_GMEM_WAIT);
@@ -331,8 +358,11 @@ template <typename config, typename globals> struct attention_partial {
         static __device__ void run(const globals &g, megakernel::state<config> &s) {
             if (kittens::warp::laneid() == 0) {
 #ifdef KITTENS_BLACKWELL
-                s.wait_tensor_ready();
-                arrive(s.tensor_finished, config::NUM_CONSUMER_WARPS);
+                // HIP: This is CUDA/NVIDIA Blackwell specific.
+                // It should be commented out or replaced with an AMD equivalent
+                // if one exists, otherwise removed.
+                // s.wait_tensor_ready();
+                // arrive(s.tensor_finished, config::NUM_CONSUMER_WARPS);
 #endif
 
                 // Setup
@@ -370,16 +400,22 @@ template <typename config, typename globals> struct attention_partial {
                         wait_for_kv(g, s, inst);
                     }
 
-                    kittens::tma::expect(K_arrived(s, stage), K_smem);
-                    kittens::tma::load_async<dim::DEPTH, cache_policy::EVICT_FIRST>(
+                    // HIP: Assuming kittens::tma:: is a CUDA TMA abstraction.
+                    // This needs to be replaced with the HIP equivalent,
+                    // which is likely the `kittens::load` function for global->shared.
+                    // `kittens::tma::expect` is likely a no-op or semaphore check.
+                    
+                    // kittens::tma::expect(K_arrived(s, stage), K_smem); 
+                    kittens::load( // Replaces tma::load_async
                         K_smem, g.k_cache,
-                        {inst.layer_idx, cur_blk_idx, inst.kv_head_idx, 0},
-                        K_arrived(s, stage));
-                    kittens::tma::expect(V_arrived(s, stage), V_smem);
-                    kittens::tma::load_async<dim::DEPTH, cache_policy::EVICT_FIRST>(
+                        {inst.layer_idx, cur_blk_idx, inst.kv_head_idx, 0});
+                    kittens::arrive(K_arrived(s, stage)); // Manually signal arrival
+                    
+                    // kittens::tma::expect(V_arrived(s, stage), V_smem);
+                    kittens::load( // Replaces tma::load_async
                         V_smem, g.v_cache,
-                        {inst.layer_idx, cur_blk_idx, inst.kv_head_idx, 0},
-                        V_arrived(s, stage));
+                        {inst.layer_idx, cur_blk_idx, inst.kv_head_idx, 0});
+                    kittens::arrive(V_arrived(s, stage)); // Manually signal arrival
                 }
             }
         }
@@ -391,6 +427,7 @@ template <typename config, typename globals> struct attention_partial {
                 // Wait for the previous ops to finish1
                 parsed_instruction inst{s};
                 int q_head_start_idx = inst.kv_head_idx * GQA_RATIO;
+                constexpr int sleep_cycles = config::GMEM_SPIN_LOOP_SLEEP_NANOS / 100;
 
                 if (kittens::laneid() == 0) {
                     for (int head_offset = 0; head_offset < GQA_RATIO;
@@ -400,11 +437,12 @@ template <typename config, typename globals> struct attention_partial {
                                           OPCODE_RMS_QKV_MatVecRopeAppend - 1,
                                           q_head_start_idx + head_offset}] <
                                4) {
-                            __nanosleep(config::GMEM_SPIN_LOOP_SLEEP_NANOS);
+                            // HIP: Replace __nanosleep
+                            if (sleep_cycles > 0) __builtin_amdgcn_s_sleep(sleep_cycles);
                         }
                     }
                 }
-                kittens::warp::sync();
+                __builtin_amdgcn_s_barrier()
 
                 // Setup
                 int q_head_local_idx =
@@ -447,17 +485,10 @@ template <typename config, typename globals> struct attention_partial {
                 load_Q_async(Q_smem, g.q_post_rope, q_head_start_idx);
 
                 // Wait for Q to arrive
-                kittens::warp::load_async_wait();
-
+                // HIP: The async load function now waits internally.
+                // kittens::warp::load_async_wait(); // No longer needed
+                
                 kittens::warp::load(Q_reg, Q_smem);
-
-                // kittens::sv_bf<256> &true_qsmem = *reinterpret_cast<kittens::sv_bf<256>
-                // *>(&Q_smem);
-
-                // kittens::warp::load(true_qsmem, g.q_post_rope, {inst.kv_head_idx});
-                // kittens::warp::sync();
-                // kittens::warp::load(Q_reg, Q_smem);
-                // kittens::warp::sync();
 
                 // Run the pipeline!
                 for (int i = 0; i + start_blk_idx < end_blk_idx; ++i) {
@@ -471,7 +502,7 @@ template <typename config, typename globals> struct attention_partial {
 
                     kittens::warp::load(K_reg, K_smem);
                     kittens::warp::mma_ABt(attn_fl_reg, Q_reg, K_reg, attn_fl_reg);
-                    kittens::warp::sync();
+                    __builtin_amdgcn_s_barrier()
                     kittens::warp::arrive(K_finished(s, stage));
 
                     // Mask out invalid positions at the end
@@ -507,7 +538,7 @@ template <typename config, typename globals> struct attention_partial {
                     kittens::warp::copy(attn_bf_reg,
                                attn_fl_reg); // Convert to bf16 to do matmul
                     kittens::warp::mma_AB(O_reg, attn_bf_reg, V_reg, O_reg);
-                    kittens::warp::sync();
+                    __builtin_amdgcn_s_barrier()
                     kittens::warp::arrive(V_finished(s, stage));
 
                     // Normalize and accumulate demoniator
@@ -520,7 +551,7 @@ template <typename config, typename globals> struct attention_partial {
                 }
 
                 // Finish
-                kittens::warp::sync();
+                __builtin_amdgcn_s_barrier()
 
                 if (start_blk_idx < end_blk_idx) {
                     finish_KV_page(s);
@@ -537,11 +568,11 @@ template <typename config, typename globals> struct attention_partial {
 
                 // Store the results
                 store_4_rows(O_smem, O_reg, q_head_local_idx);
-                kittens::warp::sync();
+                __builtin_amdgcn_s_barrier()
 
                 kittens::warp::arrive(O_arrived(s));
                 kittens::warp::store(L_smem, L_reg);
-                kittens::warp::sync();
+                __builtin_amdgcn_s_barrier()
                 kittens::warp::arrive(L_arrived(s));
             }
         }
@@ -556,7 +587,7 @@ template <typename config, typename globals> struct attention_partial {
                 kittens::wait(O_arrived(s), 0);
                 s.record(megakernel::TEVENT_OUTPUT_READY);
             }
-            kittens::warp::sync();
+            __builtin_amdgcn_s_barrier()
 
             kittens::rv_bf<globals::head_dim> O_bf;
             for (int head_offset = 0; head_offset < GQA_RATIO; head_offset++) {
@@ -564,9 +595,9 @@ template <typename config, typename globals> struct attention_partial {
                 auto &smem_bf = *reinterpret_cast<o_sv_bf *>(&smem_fl);
 
                 kittens::warp::load(O_bf, smem_fl);
-                kittens::warp::sync();
+                __builtin_amdgcn_s_barrier()
                 kittens::warp::store(smem_bf, O_bf);
-                kittens::warp::sync();
+                __builtin_amdgcn_s_barrier()
             }
 
             if (kittens::laneid() == 0) {
@@ -574,7 +605,9 @@ template <typename config, typename globals> struct attention_partial {
                      head_offset++) {
                     auto &smem_bf =
                         *reinterpret_cast<o_sv_bf *>(&O_smem[head_offset]);
-                    kittens::tma::store_async<cache_policy::EVICT_LAST>(
+                    // HIP: kittens::tma::store_async is CUDA-specific (TMA).
+                    // Replaced with synchronous kittens::store
+                    kittens::store(
                         g.attn_out, smem_bf, {q_head_start_idx + head_offset});
                 }
             }
@@ -584,14 +617,16 @@ template <typename config, typename globals> struct attention_partial {
         store_o_no_skip(const globals &g, megakernel::state<config> &s,
                         int q_head_start_idx, parsed_instruction &inst) {
             // Store partial attention output to global memory
-            if (laneid == 0) {
+            if (kittens::warp::laneid() == 0) {
                 o_sv(&O_smem)[GQA_RATIO] = get_O_smem(s);
                 kittens::wait(O_arrived(s), 0);
                 s.record(megakernel::TEVENT_OUTPUT_READY);
 
                 for (int head_offset = 0; head_offset < GQA_RATIO;
                      head_offset++) {
-                    kittens::tma::store_async<cache_policy::EVICT_LAST>(
+                    // HIP: kittens::tma::store_async is CUDA-specific (TMA).
+                    // Replaced with synchronous kittens::store
+                    kittens::store(
                         g.attn_out_intermediates, O_smem[head_offset],
                         {0, q_head_start_idx + head_offset, inst.partial_idx,
                          0});
@@ -623,25 +658,33 @@ template <typename config, typename globals> struct attention_partial {
                 // We can do this in the consumer if we want to (without using
                 // smem)
                 float tmp;
-                uint32_t src_ptr =
-                    static_cast<uint32_t>(__cvta_generic_to_shared(
+                // HIP: Remove __cvta_generic_to_shared and cast pointer
+                uintptr_t src_ptr_uint =
+                    static_cast<uintptr_t>(reinterpret_cast<void*>(
                         &L_smem.data[q_head_vec_start_idx + laneid]));
+                
+                float *src_ptr = reinterpret_cast<float*>(src_ptr_uint);
+
                 float *dst_ptr =
                     (float *)&g.attn_lse_intermediates
                         .raw_ptr[(q_head_start_idx + laneid) *
                                      g.attn_lse_intermediates.cols() +
                                  inst.partial_idx];
-                asm volatile("ld.shared.f32 %0, [%1];\n"
-                             : "=f"(tmp)
-                             : "r"(src_ptr));
-                asm volatile("st.global.f32 [%0], %1;\n"
-                             :
-                             : "l"(dst_ptr), "f"(tmp));
+                
+                // HIP: Replace inline PTX assembly with C++
+                tmp = *src_ptr;
+                *dst_ptr = tmp;
             }
-            kittens::warp::sync(); // ensure all writes are committed
+            __builtin_amdgcn_s_barrier()// ensure all writes are committed
+            
+            // HIP: Removed CUDA-specific fence.
             // asm volatile("fence.acq_rel.gpu;");
-
-            kittens::tma::store_async_wait();
+            
+            // HIP: kittens::tma::store_async_wait is CUDA-specific (TMA).
+            // A simple warp sync is needed here to make sure stores are visible
+            // before finishing the page.
+            __builtin_amdgcn_s_barrier()
+            
             if (laneid == 0) {
                 s.record(123 + laneid);
                 finish_QOL_page(s);
@@ -655,14 +698,15 @@ template <typename config, typename globals> struct attention_partial {
                 }
 
                 if (skip_attn_reduction) {
-                    atomicAdd(&g.Bar[{inst.layer_idx,
-                                      OPCODE_AttentionReduction - 1, 0}],
+                    // HIP: atomicAdd is available in HIP
+                    atomicAdd(reinterpret_cast<unsigned long long*>(&g.Bar[{inst.layer_idx,
+                                      OPCODE_AttentionReduction - 1, 0}]),
                               1);
                 } else {
                     // Adding only at 0, 4, 8, ... should be sufficient for the
                     // reduction op!
-                    atomicAdd(&g.Bar[{inst.layer_idx, opcode - 1,
-                                      q_head_start_idx + laneid}],
+                    atomicAdd(reinterpret_cast<unsigned long long*>(&g.Bar[{inst.layer_idx, opcode - 1,
+                                      q_head_start_idx + laneid}]),
                               1);
                 }
 

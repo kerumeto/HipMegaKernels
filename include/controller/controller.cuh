@@ -132,6 +132,10 @@ __device__ void main_loop(const globals &g, ::megakernel::state<config> &kvms) {
     }
 
     // invalidate remaining semaphores and write out remaining timings
+    // Remember that our pipline is config::INSTRUCTION_PIPELINE_STAGES (2) deep
+    // When the above loop ended, it finished preparng the last 2 instructions,
+    // but they have not yet been waited on or had their semaphores invalidated.
+    // That is what this loop is for.
     for (int i = 0; i < config::INSTRUCTION_PIPELINE_STAGES; i++) {
         auto instruction_index =
             num_iters - config::INSTRUCTION_PIPELINE_STAGES + i;

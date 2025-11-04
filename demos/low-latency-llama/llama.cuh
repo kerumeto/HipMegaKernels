@@ -24,6 +24,9 @@
 #define LLAMA_1B_VOCAB_SIZE 128256
 #define H100_SM_COUNT 132
 #define B200_SM_COUNT 148
+// Specific to the MI300X Accelerators
+// https://www.amd.com/en/products/accelerators/instinct/mi300/mi300x.html
+#define MI300X_SM_COUNT 304
 
 constexpr int ATOMIC_ADD_START = megakernel::FREE_SLOTS_START;
 constexpr int ATOMIC_ADD_END = ATOMIC_ADD_START + 1;
@@ -153,7 +156,8 @@ typedef globals_t<LLAMA_1B_NUM_LAYERS, LLAMA_1B_HIDDEN_DIM,
 #ifndef KITTENS_BLACKWELL
                   H100_SM_COUNT>
 #else
-                  B200_SM_COUNT>
+// This is specific to the MI300X GPU
+                  MI300X_SM_COUNT>
 #endif
     llama_1b_globals;
 

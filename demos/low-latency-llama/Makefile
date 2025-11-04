@@ -1,8 +1,9 @@
 # Compiler
-NVCC?=nvcc
+HIPCC?=hipcc
 
+# Default GPU target (e.g., MI300X)
 ifndef GPU
-GPU=B200
+GPU=MI300X
 endif
 
 TARGET=mk_llama
@@ -13,18 +14,31 @@ ifndef PYTHON_VERSION
 PYTHON_VERSION=3.13
 endif
 
-NVCCFLAGS=-DNDEBUG -Xcompiler=-fPIE --expt-extended-lambda --expt-relaxed-constexpr -Xcompiler=-Wno-psabi -Xcompiler=-fno-strict-aliasing --use_fast_math -forward-unknown-to-host-compiler -O3 -Xnvlink=--verbose -Xptxas=--verbose -Xptxas=--warn-on-spills -std=c++20 -x cu -lrt -lpthread -ldl -lcuda -lcudadevrt -lcudart_static -lcublas -lineinfo
-NVCCFLAGS+= -I${THUNDERKITTENS_ROOT}/include -I${MEGAKERNELS_ROOT}/include $(shell python3 -m pybind11 --includes) $(shell python3-config --ldflags) -shared -fPIC -lpython${PYTHON_VERSION}
+# Common flags for the host and device compiler
+COMMON_FLAGS=-DNDEBUG -O3 -std=c++20 -fPIC
+# Host compiler specific flags
+HOST_FLAGS=-Xcompiler=-fPIE -Xcompiler=-Wno-psabi -Xcompiler=-fno-strict-aliasing
+# Linker flags
+LINK_FLAGS=-lrt -lpthread -ldl -lhipsparse
 
-# Conditional setup based on the target GPU
-ifeq ($(GPU),4090)
-NVCCFLAGS+= -DKITTENS_4090 -arch=sm_89
-else ifeq ($(GPU),A100)
-NVCCFLAGS+= -DKITTENS_A100 -arch=sm_80
-else ifeq ($(GPU),H100)
-NVCCFLAGS+= -DKITTENS_HOPPER -arch=sm_90a
+# Base HIPCC flags
+HIPCCFLAGS=$(COMMON_FLAGS) $(HOST_FLAGS) $(LINK_FLAGS) -shared
+# Include paths and Python flags
+HIPCCFLAGS+= -I${THUNDERKITTENS_ROOT}/include -I${MEGAKERNELS_ROOT}/include $(shell python3 -m pybind11 --includes) $(shell python3-config --ldflags) -lpython${PYTHON_VERSION}
+
+# Conditional setup based on the target AMD GPU
+ifeq ($(GPU),MI200)
+# gfx90a: MI200 series
+HIPCCFLAGS+= --offload-arch=gfx90a -DKITTENS_MI200
+else ifeq ($(GPU),MI250)
+# gfx90a: MI200 series
+HIPCCFLAGS+= --offload-arch=gfx90a -DKITTENS_MI250
+else ifeq ($(GPU),MI300X)
+# gfx942: MI300X series
+HIPCCFLAGS+= --offload-arch=gfx942 -DKITTENS_MI300X
 else
-NVCCFLAGS+= -DKITTENS_HOPPER -DKITTENS_BLACKWELL -arch=sm_100a
+# Default to MI300X architecture
+HIPCCFLAGS+= --offload-arch=gfx942 -DKITTENS_MI300X
 endif
 
 # Default target
@@ -34,7 +48,7 @@ all: $(TARGET)
 # 	python test.py
 
 $(TARGET): $(SRC)
-	$(NVCC) $(SRC) $(NVCCFLAGS) -o $(TARGET)$(shell python3-config --extension-suffix)
+	$(HIPCC) $(SRC) $(HIPCCFLAGS) -o $(TARGET)$(shell python3-config --extension-suffix)
 
 # Clean target
 clean:
