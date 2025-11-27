@@ -133,40 +133,37 @@ template <typename config, typename globals> struct attention_partial {
         static_assert(SV::length == src.cols,
                       "dst length must match src cols.");
 
-        using T2 = RT::dtype;
-        using T = base_types::packing<T2>::unpacked_type;
-        using U = SV::dtype;
-        using U2 = base_types::packing<U>::packed_type;
+        using T2 = typename RT::dtype;
+        using U = typename SV::dtype;
+        using U2 = typename base_types::packing<U>::packed_type; // e.g., float2 or bf16_2
 
-        // HIP: Use uintptr_t for pointers that will be cast to integer types
-        uintptr_t dst_ptr[4];
-        dst_ptr[0] =
-            static_cast<uintptr_t>(reinterpret_cast<void *>(&dst[0].data[0]));
-        dst_ptr[1] =
-            static_cast<uintptr_t>(reinterpret_cast<void *>(&dst[1].data[0]));
-        dst_ptr[2] =
-            static_cast<uintptr_t>(reinterpret_cast<void *>(&dst[2].data[0]));
-        dst_ptr[3] =
-            static_cast<uintptr_t>(reinterpret_cast<void *>(&dst[3].data[0]));
-
-        int laneid = kittens::warp::laneid();
+        int laneid = kittens::laneid(); // Use HipKittens laneid
         int local_row_idx = (laneid % 16) / 4;
         int local_col_idx = laneid % 4;
+
+        // Address logic: Select the correct shared vector based on the lane's local row index
+        // We write directly to the pointer provided by the shared vector .data array
+        U* dst_base_ptr = &dst[local_row_idx].data[0];
 
         if (row4idx % 2 == 0 && laneid < 16) { // rows 0~3 or 8~11
             if (row4idx / 2 == 0) {            // rows 0~3
                 for (int j = 0; j < src.width; j++) {
                     U2 tmp[2];
+                    // Convert and extract from register tile
                     tmp[0] = base_types::convertor<U2, T2>::convert(
                         src.tiles[0][j].data[0]);
                     tmp[1] = base_types::convertor<U2, T2>::convert(
                         src.tiles[0][j].data[2]); // note 2, not 1
                     int col_idx = local_col_idx * 2 + j * 16;
-                    // HIP: Use kittens::store_shared_vec for warp-level stores
-                    kittens::store_shared_vec(
-                        dst_ptr[local_row_idx] + sizeof(U) * col_idx, tmp[0]);
-                    kittens::store_shared_vec(
-                        dst_ptr[local_row_idx] + sizeof(U) * (col_idx + 8), tmp[1]);
+                    
+                    // Store to shared memory using pointer assignment
+                    // Compiles to ds_write instructions on AMD
+                    // See shared_to_register.cuh::store - Line 99 to see 
+                    // a similar pattern of storing directly into shared memory
+                    // DEBUG: the compiler should know that this is a shared
+                    // address, make sure to look at the asm to double check
+                    *reinterpret_cast<U2*>(&dst_base_ptr[col_idx]) = tmp[0];
+                    *reinterpret_cast<U2*>(&dst_base_ptr[col_idx + 8]) = tmp[1];
                 }
             } else { // rows 8~11
                 for (int j = 0; j < src.width; j++) {
@@ -176,38 +173,33 @@ template <typename config, typename globals> struct attention_partial {
                     tmp[1] = base_types::convertor<U2, T2>::convert(
                         src.tiles[0][j].data[3]);
                     int col_idx = local_col_idx * 2 + j * 16;
-                    kittens::store_shared_vec(
-                        dst_ptr[local_row_idx] + sizeof(U) * col_idx, tmp[0]);
-                    kittens::store_shared_vec(
-                        dst_ptr[local_row_idx] + sizeof(U) * (col_idx + 8), tmp[1]);
+
+                    *reinterpret_cast<U2*>(&dst_base_ptr[col_idx]) = tmp[0];
+                    *reinterpret_cast<U2*>(&dst_base_ptr[col_idx + 8]) = tmp[1];
                 }
             }
         } else if (row4idx % 2 == 1 && laneid >= 16) { // rows 4~7 or 12~15
             if (row4idx / 2 == 0) {                    // rows 4~7
                 for (int j = 0; j < src.width; j++) {
                     U2 tmp[2];
-                    tmp[0] = base_types::convertor<U2, T2>::convert(
-                        src.tiles[0][j].data[0]);
-                    tmp[1] = base_types::convertor<U2, T2>::convert(
-                        src.tiles[0][j].data[2]); // note 2, not 1
+                    tmp[0] = base_types::convertor<U2, T2>::convert(src.tiles[0][j].data[0]);
+                    tmp[1] = base_types::convertor<U2, T2>::convert(src.tiles[0][j].data[2]);
+
                     int col_idx = local_col_idx * 2 + j * 16;
-                    kittens::store_shared_vec(
-                        dst_ptr[local_row_idx] + sizeof(U) * col_idx, tmp[0]);
-                    kittens::store_shared_vec(
-                        dst_ptr[local_row_idx] + sizeof(U) * (col_idx + 8), tmp[1]);
+
+                    *reinterpret_cast<U2*>(&dst_base_ptr[col_idx]) = tmp[0];
+                    *reinterpret_cast<U2*>(&dst_base_ptr[col_idx + 8]) = tmp[1];
                 }
             } else { // rows 12~15
                 for (int j = 0; j < src.width; j++) {
                     U2 tmp[2];
-                    tmp[0] = base_types::convertor<U2, T2>::convert(
-                        src.tiles[0][j].data[1]);
-                    tmp[1] = base_types::convertor<U2, T2>::convert(
-                        src.tiles[0][j].data[3]);
+                    tmp[0] = base_types::convertor<U2, T2>::convert(src.tiles[0][j].data[1]);
+                    tmp[1] = base_types::convertor<U2, T2>::convert(src.tiles[0][j].data[3]);
+
                     int col_idx = local_col_idx * 2 + j * 16;
-                    kittens::store_shared_vec(
-                        dst_ptr[local_row_idx] + sizeof(U) * col_idx, tmp[0]);
-                    kittens::store_shared_vec(
-                        dst_ptr[local_row_idx] + sizeof(U) * (col_idx + 8), tmp[1]);
+
+                    *reinterpret_cast<U2*>(&dst_base_ptr[col_idx]) = tmp[0];
+                    *reinterpret_cast<U2*>(&dst_base_ptr[col_idx + 8]) = tmp[1];
                 }
             }
         }
@@ -245,7 +237,7 @@ template <typename config, typename globals> struct attention_partial {
             }
         }
     }
-    // This is super specific to loading Q in a single kittens::warp
+     // This is super specific to loading Q in a single kittens::warp
     // Mainly two things are different:
     //   1. Ignores Q global dimensions
     //   2. Only loads 4 rows of Q, not 16 (assumes GQA_RATIO == 4) --> only 32
@@ -255,47 +247,52 @@ template <typename config, typename globals> struct attention_partial {
                  const int q_head_start_idx /*0, 4, 8, ...*/) {
         static_assert(LLAMA_1B_HEAD_DIM == 64 && GQA_RATIO == 4,
                       "Fix this function.");
-        using T = typename q_st::dtype;
-        constexpr int elem_per_memcpy =
-            sizeof(float4) / sizeof(typename q_st::dtype);                  // 8
-        constexpr int memcpy_per_row = LLAMA_1B_HEAD_DIM / elem_per_memcpy; // 8
-
-        typename globals::activations_t::dtype *src_ptr =
-            &src.raw_ptr[q_head_start_idx * LLAMA_1B_HEAD_DIM];
-        // HIP: Use uintptr_t and remove __cvta_generic_to_shared
-        uintptr_t dst_ptr = static_cast<uintptr_t>(reinterpret_cast<void*>(
-            &dst.data[(q_head_start_idx % 16) * LLAMA_1B_HEAD_DIM]));
-
-        int laneid = kittens::warp::laneid();
-        int row = laneid / memcpy_per_row;
-        int col = (laneid * elem_per_memcpy) % LLAMA_1B_HEAD_DIM;
-
-        // HIP: Replaced cp.async with kittens async load/store abstractions
-        if (laneid < memcpy_per_row * GQA_RATIO) { // Only threads 0-31
-            // 1. Get global address
-            float4* gptr = reinterpret_cast<float4*>(
-                &src_ptr[row * LLAMA_1B_HEAD_DIM + col]
-            );
-            
-            // 2. Get swizzled shared memory address
-            // NOTE: This assumes `dst` is a non-CDNA4 `st` struct
-            // which has the .idx() member for swizzling.
-            uint32_t s_addr = dst.idx(dst_ptr, {row, col});
-
-            // 3. Load from global to register (async)
-            float4 reg_buf = kittens::load_global_vec4_async(gptr);
-
-            // 4. Wait for global load
-            asm volatile("s_waitcnt vmcnt(0)");
-
-            // 5. Store from register to shared
-            kittens::store_shared_vec(s_addr, {reg_buf.x, reg_buf.y});
-            kittens::store_shared_vec(s_addr + sizeof(float2), {reg_buf.z, reg_buf.w});
-        }
         
-        // HIP: Wait for shared memory stores (lgkmcnt) to complete.
-        // This replaces the cp.async.commit_group.
-        asm volatile("s_waitcnt lgkmcnt(0)");
+        using T = typename q_st::dtype;
+        // AMD "cp.async" equivalent (buffer_load_lds) typically operates on 16 bytes (float4 equivalent)
+        constexpr int bytes_per_load = 16;
+        constexpr int elem_per_load = bytes_per_load / sizeof(T); // 8 elements (if T is bf16)
+        constexpr int loads_per_row = LLAMA_1B_HEAD_DIM / elem_per_load; // 8 calls covers a row
+
+        // 1. Setup Source (Global Memory) using SRD (Shader Resource Descriptor)
+        const T *src_ptr = &src.raw_ptr[q_head_start_idx * LLAMA_1B_HEAD_DIM];
+        // Create a buffer resource descriptor for the source memory
+        // The range 0xFFFFFFFF is a safe default for flat pointers if size isn't strictly bounded here
+        // We do this because Nvidia doesn't do any bounds checking
+        // DEBUG: If we error here put the max size that is possible without
+        // causing warnings
+        auto srd = kittens::make_srsrc(src_ptr, 0xFFFFFFFF);
+
+        // 2. Setup Destination (Shared Memory)
+        // Calculate pointer to the start of the chunk in shared memory
+        T *dst_ptr = &dst.data[(q_head_start_idx % 16) * LLAMA_1B_HEAD_DIM];
+
+        // 3. Calculate Offsets based on Lane ID
+        int laneid = kittens::laneid();
+        int row = laneid / loads_per_row; // 0..3
+        int col = (laneid * elem_per_load) % LLAMA_1B_HEAD_DIM; // 0, 8, 16...
+
+        int offset_elems = row * LLAMA_1B_HEAD_DIM + col;
+        int offset_bytes = offset_elems * sizeof(T);
+
+        // 4. Issue Asynchronous Load (Global -> LDS)
+        // Cast shared pointer to address_space(3) for the intrinsic
+        // This is an llvm intrinsic that is linked and exposed within
+        // hip-kittens. We call it from here to perform the "fake" async load.
+        // See HipKittens/include/ops/warp/memory/util/util.cuh::llvm_amdgcn_raw_buffer_load_lds
+        kittens::llvm_amdgcn_raw_buffer_load_lds(
+            srd,                                                 // Resource descriptor
+            reinterpret_cast<kittens::as3_uint32_ptr>(dst_ptr + offset_elems), // LDS destination address
+            bytes_per_load,                                      // Size in bytes (16)
+            offset_bytes,                                        // VOffset (byte offset from src_ptr)
+            0,                                                   // SOffset
+            0,                                                   // Offset (immediate)
+            0                                                    // Aux (cache coherency)
+        );
+
+        // Note: No 'cp.async.commit_group' needed on AMD. The async actions
+        // are already on their way once issued.
+        // Make sure to call a synchrnous wait later to ensure completion.
     }
 
     struct controller {
@@ -329,19 +326,18 @@ template <typename config, typename globals> struct attention_partial {
             }
         }
     };
-    struct launcher {
+   struct launcher {
         static __device__ void wait_for_kv(const globals &g, megakernel::state<config> &s,
                                            parsed_instruction &inst) {
             s.record(megakernel::TEVENT_AT_GMEM_WAIT);
 
-            // HIP: Replace __nanosleep with a spin-wait or s_sleep
-            // Using s_sleep (nanos / 100)
-            constexpr int sleep_cycles = config::GMEM_SPIN_LOOP_SLEEP_NANOS / 100;
-
+            // Wait for the previous ops to finish (16 dims each, so 4 ops on
+            // the same head)
             while (*(volatile int *)&g.Bar[{
                        inst.layer_idx, OPCODE_RMS_QKV_MatVecRopeAppend - 1,
                        LLAMA_1B_NUM_ATTENTION_HEADS + inst.kv_head_idx}] < 4) {
-                 if (sleep_cycles > 0) __builtin_amdgcn_s_sleep(sleep_cycles);
+                // AMD-specific sleep. Arg is roughly # of 64-cycle periods.
+                __builtin_amdgcn_s_sleep(1); 
             }
 
             while (
@@ -349,74 +345,80 @@ template <typename config, typename globals> struct attention_partial {
                      .Bar[{inst.layer_idx, OPCODE_RMS_QKV_MatVecRopeAppend - 1,
                            LLAMA_1B_NUM_ATTENTION_HEADS +
                                LLAMA_1B_NUM_KV_HEADS + inst.kv_head_idx}] < 4) {
-                 if (sleep_cycles > 0) __builtin_amdgcn_s_sleep(sleep_cycles);
+                __builtin_amdgcn_s_sleep(1);
             }
 
             s.record(megakernel::TEVENT_DONE_GMEM_WAIT);
         }
 
         static __device__ void run(const globals &g, megakernel::state<config> &s) {
-            if (kittens::warp::laneid() == 0) {
+            // REMOVED: if (kittens::warp::laneid() == 0) 
+            // On AMD, global->shared loads are cooperative (vector instructions). 
+            // The entire warp must participate in the 'kittens::load' calls below.
+
 #ifdef KITTENS_BLACKWELL
-                // HIP: This is CUDA/NVIDIA Blackwell specific.
-                // It should be commented out or replaced with an AMD equivalent
-                // if one exists, otherwise removed.
-                // s.wait_tensor_ready();
-                // arrive(s.tensor_finished, config::NUM_CONSUMER_WARPS);
+            // Keep existing Blackwell/NVIDIA logic guard if needed, 
+            // but for AMD this block is likely irrelevant or handled differently.
+            // if (kittens::warp::laneid() == 0) {
+            //     s.wait_tensor_ready();
+            //     arrive(s.tensor_finished, config::NUM_CONSUMER_WARPS);
+            // }
 #endif
 
-                // Setup
-                parsed_instruction inst{s};
-                int seq_len = g.pos_id + 1;
-                int total_attn_blocks = (seq_len + LLAMA_1B_KV_BLOCK_SIZE - 1) /
-                                        LLAMA_1B_KV_BLOCK_SIZE;
-                int blocks_per_partial =
-                    (total_attn_blocks + inst.num_partials - 1) /
-                    inst.num_partials;
-                int start_blk_idx = inst.partial_idx * blocks_per_partial;
-                int end_blk_idx =
-                    min(start_blk_idx + blocks_per_partial, total_attn_blocks);
+            // Setup
+            parsed_instruction inst{s};
+            int seq_len = g.pos_id + 1;
+            int total_attn_blocks = (seq_len + LLAMA_1B_KV_BLOCK_SIZE - 1) /
+                                    LLAMA_1B_KV_BLOCK_SIZE;
+            int blocks_per_partial =
+                (total_attn_blocks + inst.num_partials - 1) /
+                inst.num_partials;
+            int start_blk_idx = inst.partial_idx * blocks_per_partial;
+            int end_blk_idx =
+                min(start_blk_idx + blocks_per_partial, total_attn_blocks);
 
-                // Wait for the KV page
-                wait_KV_page(s);
+            // Wait for the KV page
+            wait_KV_page(s);
 
-                if (start_blk_idx >= end_blk_idx)
-                    finish_KV_page(s);
+            if (start_blk_idx >= end_blk_idx)
+                finish_KV_page(s);
 
-                // Run the pipeline!
-                for (int i = 0; i + start_blk_idx < end_blk_idx; ++i) {
-                    auto cur_blk_idx = start_blk_idx + i;
-                    int stage = cur_blk_idx % NUM_STAGES;
-                    kv_st &K_smem = get_K_smem(s, stage);
-                    kv_st &V_smem = get_V_smem(s, stage);
+            // Run the pipeline!
+            for (int i = 0; i + start_blk_idx < end_blk_idx; ++i) {
+                auto cur_blk_idx = start_blk_idx + i;
+                int stage = cur_blk_idx % NUM_STAGES;
+                kv_st &K_smem = get_K_smem(s, stage);
+                kv_st &V_smem = get_V_smem(s, stage);
 
-                    if (i >= NUM_STAGES) {
-                        kittens::wait(K_finished(s, stage), (i / NUM_STAGES - 1) % 2);
-                        kittens::wait(V_finished(s, stage), (i / NUM_STAGES - 1) % 2);
-                    }
-
-                    if (cur_blk_idx == end_blk_idx - 1 &&
-                        inst.partial_idx == inst.num_partials - 1) {
-                        wait_for_kv(g, s, inst);
-                    }
-
-                    // HIP: Assuming kittens::tma:: is a CUDA TMA abstraction.
-                    // This needs to be replaced with the HIP equivalent,
-                    // which is likely the `kittens::load` function for global->shared.
-                    // `kittens::tma::expect` is likely a no-op or semaphore check.
-                    
-                    // kittens::tma::expect(K_arrived(s, stage), K_smem); 
-                    kittens::load( // Replaces tma::load_async
-                        K_smem, g.k_cache,
-                        {inst.layer_idx, cur_blk_idx, inst.kv_head_idx, 0});
-                    kittens::arrive(K_arrived(s, stage)); // Manually signal arrival
-                    
-                    // kittens::tma::expect(V_arrived(s, stage), V_smem);
-                    kittens::load( // Replaces tma::load_async
-                        V_smem, g.v_cache,
-                        {inst.layer_idx, cur_blk_idx, inst.kv_head_idx, 0});
-                    kittens::arrive(V_arrived(s, stage)); // Manually signal arrival
+                if (i >= NUM_STAGES) {
+                    // Assuming 'kittens::wait' maps to a compatible barrier wait 
+                    // or is defined in your 'megakernel::state' utils.
+                    kittens::wait(K_finished(s, stage), (i / NUM_STAGES - 1) % 2);
+                    kittens::wait(V_finished(s, stage), (i / NUM_STAGES - 1) % 2);
                 }
+
+                if (cur_blk_idx == end_blk_idx - 1 &&
+                    inst.partial_idx == inst.num_partials - 1) {
+                    wait_for_kv(g, s, inst);
+                }
+
+                // REPLACED: kittens::tma::expect -> Not needed (hardware counts)
+                // REPLACED: kittens::tma::load_async -> kittens::load (Cooperative Warp Load)
+                
+                // Load K tile asynchronously
+                kittens::load(
+                    K_smem, g.k_cache, 
+                    {inst.layer_idx, cur_blk_idx, inst.kv_head_idx, 0}
+                );
+                // If you are using mbarriers to track arrival manually, signal here:
+                // K_arrived(s, stage).arrive(); 
+
+                // Load V tile asynchronously
+                kittens::load(
+                    V_smem, g.v_cache,
+                    {inst.layer_idx, cur_blk_idx, inst.kv_head_idx, 0}
+                );
+                // V_arrived(s, stage).arrive();
             }
         }
     };
