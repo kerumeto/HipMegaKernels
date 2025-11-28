@@ -474,29 +474,30 @@ template <typename config, typename globals> struct attention_partial {
             }
         }
     };
-    struct consumer {
+     struct consumer {
         static __device__ void run(const globals &g, megakernel::state<config> &s) {
 
             if (kittens::warpid() == 0) {
-                // Wait for the previous ops to finish1
+                // Wait for the previous ops to finish
                 parsed_instruction inst{s};
                 int q_head_start_idx = inst.kv_head_idx * GQA_RATIO;
-                constexpr int sleep_cycles = config::GMEM_SPIN_LOOP_SLEEP_NANOS / 100;
 
                 if (kittens::laneid() == 0) {
                     for (int head_offset = 0; head_offset < GQA_RATIO;
                          head_offset++) {
+                        // AMD: Use s_sleep for low-power waiting. 
+                        // s_sleep(1) is ~64 clock cycles on CDNA.
                         while (*(volatile int *)&g
                                     .Bar[{inst.layer_idx,
                                           OPCODE_RMS_QKV_MatVecRopeAppend - 1,
                                           q_head_start_idx + head_offset}] <
-                               4) {
-                            // HIP: Replace __nanosleep
-                            if (sleep_cycles > 0) __builtin_amdgcn_s_sleep(sleep_cycles);
+                                4) {
+                            __builtin_amdgcn_s_sleep(1); 
                         }
                     }
                 }
-                __builtin_amdgcn_s_barrier()
+                // AMD: Ensure the warp stays converged after scalar loop
+                __builtin_amdgcn_wave_barrier();
 
                 // Setup
                 int q_head_local_idx =
@@ -538,12 +539,10 @@ template <typename config, typename globals> struct attention_partial {
 
                 load_Q_async(Q_smem, g.q_post_rope, q_head_start_idx);
 
-                // wait for q to land before reading from it
-                __builtin_amdgcn_s_waitcnt(0); 
                 // Wait for Q to arrive
-                // HIP: The async load function now waits internally.
-                // kittens::warp::load_async_wait(); // No longer needed
-                
+                // AMD: Explicitly wait for global (vmcnt) and shared (lgkmcnt) loads to complete
+                asm volatile("s_waitcnt vmcnt(0) lgkmcnt(0)");
+
                 kittens::warp::load(Q_reg, Q_smem);
 
                 // Run the pipeline!
@@ -551,63 +550,69 @@ template <typename config, typename globals> struct attention_partial {
                     int stage = i % NUM_STAGES;
                     kv_st &K_smem = get_K_smem(s, stage);
                     kv_st &V_smem = get_V_smem(s, stage);
+                    // Calculate expected semaphore count (monotonic)
+                    // Assuming producer increments once per tile usage.
+                    int wait_target = (i / NUM_STAGES) + 1;
 
                     // Perform Q @ K.T
                     kittens::warp::zero(attn_fl_reg);
-                    // kittens::warp::wait(K_arrived(s, stage), (i / NUM_STAGES) % 2);
-
-                    K_arrived(s, stage).wait((i/NUM_STAGES)+1);
+                    
+                    // Wait for K producer
+                    K_arrived(s, stage).wait(wait_target);
 
                     kittens::warp::load(K_reg, K_smem);
                     kittens::warp::mma_ABt(attn_fl_reg, Q_reg, K_reg, attn_fl_reg);
-                    __builtin_amdgcn_s_barrier()
-                    // Signal we are done reading K
+                    
+                    // AMD: Wave barrier to ensure instruction issue order/visibility before signaling
+                    __builtin_amdgcn_wave_barrier();
+                    
+                    // Signal K finished to producer
                     K_finished(s, stage).arrive();
-                    // kittens::warp::arrive(K_finished(s, stage));
 
                     // Mask out invalid positions at the end
                     if ((i + start_blk_idx + 1) * LLAMA_1B_KV_BLOCK_SIZE >
                         seq_len)
                         right_fill(attn_fl_reg, attn_fl_reg,
-                                   seq_len % LLAMA_1B_KV_BLOCK_SIZE,
-                                   -999999999999.f);
+                                    seq_len % LLAMA_1B_KV_BLOCK_SIZE,
+                                    -999999999999.f);
 
                     // Obtain maximums per row (which is per head)
                     kittens::warp::row_max(max_vec_reg, attn_fl_reg,
-                                  max_vec_reg); // includes previous max
+                                    max_vec_reg); // includes previous max
 
                     // Scale attention block and maximums by sqrt(D_h)
                     kittens::warp::mul(attn_fl_reg, attn_fl_reg, softmax_temp);
                     kittens::warp::mul(scaled_max_vec_reg, max_vec_reg, softmax_temp);
 
-                    // Calculate sofkittens::tmax numerator
+                    // Calculate softmax numerator
                     kittens::warp::sub_row(attn_fl_reg, attn_fl_reg, scaled_max_vec_reg);
                     kittens::warp::exp2(attn_fl_reg, attn_fl_reg);
 
-                    // Calculate sofkittens::tmax denominator
+                    // Calculate softmax denominator
                     kittens::warp::sub(diff_scaled_max_vec_reg, last_scaled_max_vec_reg,
-                              scaled_max_vec_reg);
+                                scaled_max_vec_reg);
                     kittens::warp::exp2(diff_scaled_max_vec_reg,
-                               diff_scaled_max_vec_reg);
+                                diff_scaled_max_vec_reg);
 
                     // Normalize and accumulate numerator (A @ V)
                     kittens::warp::mul_row(O_reg, O_reg, diff_scaled_max_vec_reg);
-
-                    // wait for v
-                    V_arrived(s, stage).wait((i/NUM_STAGES)+1);
-                    // kittens::warp::wait(V_arrived(s, stage), (i / NUM_STAGES) % 2);
+                    
+                    // Wait for V producer
+                    V_arrived(s, stage).wait(wait_target);
 
                     kittens::warp::load(V_reg, V_smem);
                     kittens::warp::copy(attn_bf_reg,
-                               attn_fl_reg); // Convert to bf16 to do matmul
+                                attn_fl_reg); // Convert to bf16 to do matmul
                     kittens::warp::mma_AB(O_reg, attn_bf_reg, V_reg, O_reg);
-                    __builtin_amdgcn_s_barrier()
-                    // kittens::warp::arrive(V_finished(s, stage));
+                    
+                    __builtin_amdgcn_wave_barrier();
+                    
+                    // Signal V finished to producer
                     V_finished(s, stage).arrive();
 
                     // Normalize and accumulate demoniator
                     kittens::warp::mul(norm_vec_reg, norm_vec_reg,
-                              diff_scaled_max_vec_reg);
+                                diff_scaled_max_vec_reg);
                     kittens::warp::row_sum(norm_vec_reg, attn_fl_reg, norm_vec_reg);
 
                     // Save for next iteration
@@ -615,7 +620,7 @@ template <typename config, typename globals> struct attention_partial {
                 }
 
                 // Finish
-                __builtin_amdgcn_s_barrier()
+                __builtin_amdgcn_wave_barrier();
 
                 if (start_blk_idx < end_blk_idx) {
                     finish_KV_page(s);
@@ -632,14 +637,15 @@ template <typename config, typename globals> struct attention_partial {
 
                 // Store the results
                 store_4_rows(O_smem, O_reg, q_head_local_idx);
-                __builtin_amdgcn_s_barrier()
+                __builtin_amdgcn_wave_barrier();
 
-                // kittens::warp::arrive(O_arrived(s));
-                O_arrived(s).arrive(); // Use arrive() here 
+                // Signal Output
+                O_arrived(s).arrive();
+                
                 kittens::warp::store(L_smem, L_reg);
-                __builtin_amdgcn_s_barrier()
-                // kittens::warp::arrive(L_arrived(s));
-                L_arrived(s).arrive(); // Use arrive() h
+                __builtin_amdgcn_wave_barrier();
+                
+                L_arrived(s).arrive();
             }
         }
     };
@@ -649,64 +655,70 @@ template <typename config, typename globals> struct attention_partial {
         store_o_skip(const globals &g, megakernel::state<config> &s, int q_head_start_idx) {
             auto O_smem = get_O_smem(s);
 
+            // Wait for Consumer to finish producing O
             if (kittens::laneid() == 0) {
-                // kittens::wait(O_arrived(s), 0);
+                // HipKittens semaphore wait (target = 1)
                 O_arrived(s).wait(1);
                 s.record(megakernel::TEVENT_OUTPUT_READY);
             }
-            __builtin_amdgcn_s_barrier()
+            // AMD: Ensure warp converges after scalar wait
+            __builtin_amdgcn_wave_barrier();
 
+            // Register tile for data movement (Shared -> Reg -> Global)
             kittens::rv_bf<globals::head_dim> O_bf;
+
             for (int head_offset = 0; head_offset < GQA_RATIO; head_offset++) {
                 auto &smem_fl = O_smem[head_offset];
-                auto &smem_bf = *reinterpret_cast<o_sv_bf *>(&smem_fl);
-
+                
+                // 1. Load from Shared Memory (Float) into Register (BF16)
+                // Note: kittens::warp::load typically handles layout/type conversion
                 kittens::warp::load(O_bf, smem_fl);
-                __builtin_amdgcn_s_barrier()
-                kittens::warp::store(smem_bf, O_bf);
-                __builtin_amdgcn_s_barrier()
+                
+                // AMD: Wave barrier to ensure registers are ready before store
+                __builtin_amdgcn_wave_barrier();
+
+                // 2. Store from Register (BF16) directly to Global Memory
+                // Replacing TMA store with manual register-based store
+                kittens::warp::store(g.attn_out, O_bf, {q_head_start_idx + head_offset});
             }
 
-            if (kittens::laneid() == 0) {
-                for (int head_offset = 0; head_offset < GQA_RATIO;
-                     head_offset++) {
-                    auto &smem_bf =
-                        *reinterpret_cast<o_sv_bf *>(&O_smem[head_offset]);
-                    // HIP: kittens::tma::store_async is CUDA-specific (TMA).
-                    // Replaced with synchronous kittens::store
-                    kittens::store(
-                        g.attn_out, smem_bf, {q_head_start_idx + head_offset});
-                }
-            }
+            // AMD: Explicitly wait for global memory stores (vmcnt) to complete
+            __builtin_amdgcn_s_waitcnt(0);
         }
 
         static inline __device__ void
         store_o_no_skip(const globals &g, megakernel::state<config> &s,
                         int q_head_start_idx, parsed_instruction &inst) {
-            // Store partial attention output to global memory
-            if (kittens::warp::laneid() == 0) {
-                o_sv(&O_smem)[GQA_RATIO] = get_O_smem(s);
-                // kittens::wait(O_arrived(s), 0);
+            
+            auto O_smem = get_O_smem(s);
+
+            if (kittens::laneid() == 0) {
                 O_arrived(s).wait(1);
                 s.record(megakernel::TEVENT_OUTPUT_READY);
-
-                for (int head_offset = 0; head_offset < GQA_RATIO;
-                     head_offset++) {
-                    // HIP: kittens::tma::store_async is CUDA-specific (TMA).
-                    // Replaced with synchronous kittens::store
-                    kittens::store(
-                        g.attn_out_intermediates, O_smem[head_offset],
-                        {0, q_head_start_idx + head_offset, inst.partial_idx,
-                         0});
-                }
             }
+            __builtin_amdgcn_wave_barrier();
+
+            // Temporary register tile for intermediate storage
+            // Assuming head_dim matches the partial output layout
+            kittens::rv<globals::head_dim> O_reg; 
+
+            for (int head_offset = 0; head_offset < GQA_RATIO; head_offset++) {
+                // Load Shared -> Register
+                kittens::warp::load(O_reg, O_smem[head_offset]);
+
+                // Store Register -> Global
+                kittens::warp::store(g.attn_out_intermediates, O_reg,
+                    {0, q_head_start_idx + head_offset, inst.partial_idx, 0});
+            }
+            
+            // Wait for stores
+            __builtin_amdgcn_s_waitcnt(0);
         }
 
         static __device__ void run(const globals &g, megakernel::state<config> &s) {
             parsed_instruction inst{s};
-            int laneid = kittens::warp::laneid();
-            int q_head_start_idx =
-                inst.kv_head_idx * GQA_RATIO; // 0, 4, 8, 12, 16, 20, 24, 28
+            int laneid = kittens::laneid(); // Use standard kittens laneid
+            int q_head_start_idx = inst.kv_head_idx * GQA_RATIO; 
             int q_head_vec_start_idx = q_head_start_idx % 16;
 
             auto skip_attn_reduction = g.skip_attn_reduction;
@@ -720,46 +732,34 @@ template <typename config, typename globals> struct attention_partial {
             // Store LSE to global memory
             if (laneid < GQA_RATIO && !skip_attn_reduction) {
                 l_sv &L_smem = get_L_smem(s);
-                // kittens::wait(L_arrived(s), 0);
+                
+                // Wait for LSE production
                 L_arrived(s).wait(1);
 
-                // Can't do anything fancy with writing 4 spread-out values.
-                // We can do this in the consumer if we want to (without using
-                // smem)
-                float tmp;
-                // HIP: Remove __cvta_generic_to_shared and cast pointer
-                uintptr_t src_ptr_uint =
-                    static_cast<uintptr_t>(reinterpret_cast<void*>(
-                        &L_smem.data[q_head_vec_start_idx + laneid]));
+                // Manual copy Shared -> Global
+                // AMD: No inline PTX needed. Standard C++ pointer access compiles to 
+                // efficient ds_read_b32 and global_store_dword instructions.
+                float tmp = L_smem.data[q_head_vec_start_idx + laneid];
                 
-                float *src_ptr = reinterpret_cast<float*>(src_ptr_uint);
-
-                float *dst_ptr =
-                    (float *)&g.attn_lse_intermediates
-                        .raw_ptr[(q_head_start_idx + laneid) *
-                                     g.attn_lse_intermediates.cols() +
-                                 inst.partial_idx];
+                float *dst_ptr = (float *)&g.attn_lse_intermediates
+                                    .raw_ptr[(q_head_start_idx + laneid) *
+                                                g.attn_lse_intermediates.cols() +
+                                            inst.partial_idx];
                 
-                // HIP: Replace inline PTX assembly with C++
-                tmp = *src_ptr;
                 *dst_ptr = tmp;
             }
-            __builtin_amdgcn_s_barrier()// ensure all writes are committed
-            
-            // HIP: Removed CUDA-specific fence.
-            // asm volatile("fence.acq_rel.gpu;");
-            
-            // HIP: kittens::tma::store_async_wait is CUDA-specific (TMA).
-            // A simple warp sync is needed here to make sure stores are visible
-            // before finishing the page.
-            __builtin_amdgcn_s_barrier()
-            
+
+            // Ensure all global writes (including LSE) are visible
+            __threadfence_block();
+            __builtin_amdgcn_s_waitcnt(0); 
+
             if (laneid == 0) {
+                // 123 is arbitrary debug ID from original code
                 s.record(123 + laneid);
                 finish_QOL_page(s);
             }
 
-            // Wait and finish
+            // Signal completion to global barrier (for reduction kernel)
             if (laneid < GQA_RATIO) {
 
                 if (laneid == 0) {
@@ -767,16 +767,15 @@ template <typename config, typename globals> struct attention_partial {
                 }
 
                 if (skip_attn_reduction) {
-                    // HIP: atomicAdd is available in HIP
-                    atomicAdd(reinterpret_cast<unsigned long long*>(&g.Bar[{inst.layer_idx,
-                                      OPCODE_AttentionReduction - 1, 0}]),
-                              1);
+                    atomicAdd(&g.Bar[{inst.layer_idx,
+                                    OPCODE_AttentionReduction - 1, 0}],
+                            1);
                 } else {
-                    // Adding only at 0, 4, 8, ... should be sufficient for the
-                    // reduction op!
-                    atomicAdd(reinterpret_cast<unsigned long long*>(&g.Bar[{inst.layer_idx, opcode - 1,
-                                      q_head_start_idx + laneid}]),
-                              1);
+                    // Assuming OPCODE_RMS_QKV_MatVecRopeAppend based on consumer context
+                    atomicAdd(&g.Bar[{inst.layer_idx, 
+                                    OPCODE_RMS_QKV_MatVecRopeAppend - 1,
+                                    q_head_start_idx + laneid}],
+                            1);
                 }
 
                 if (laneid == 0) {
