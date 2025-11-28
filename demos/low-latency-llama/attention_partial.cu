@@ -10,6 +10,38 @@
 using namespace kittens;
 using namespace megakernel;
 
+namespace kittens {
+    struct hip_semaphore {
+        volatile int* count; // shared memory location
+
+        // initialzie sempahore to passed in vale should be 0 usualy
+        __device__ inline void init(int val) {
+            if (threadIdx.x == 0) {
+                *count = val;
+            }
+            __syncthreads();
+        }
+
+        __device__ inline void arrive() {
+            __builtin_amdgcn_s_waitcnt(0);
+
+            __threadfence_block();
+
+            if (threadIdx.x % 32 == 0) {
+                atomicAdd((int*)count, 1);
+            }
+         }
+
+         __device__ inline void wait(int target_val) {
+            while (*(volatile int*)count < target_val) {
+                __builtin_amdgcn_s_sleep(1); // sleep for 64 clock cycles
+            }
+             __threadfence_block();
+         }
+
+
+    }
+}
 template <typename config, typename globals> struct attention_partial {
     static constexpr int opcode = OPCODE_PartialAttention;
     static constexpr int NUM_STAGES = 3;
@@ -60,28 +92,34 @@ template <typename config, typename globals> struct attention_partial {
     };
 
     // We have 32 dynamic kittens::semaphores total
-    __device__ static inline kittens::semaphore &Q_arrived(megakernel::state<config> &s) {
-        return s.semaphores()[0];
+    __device__ static inline kittens::hip_semaphore &Q_arrived(megakernel::state<config> &s) {
+        return *reinterpret_cast<kittens::hip_semaphore*>(&s.semaphores()[0]);
     }
-    __device__ static inline kittens::semaphore &O_arrived(megakernel::state<config> &s) {
-        return s.semaphores()[1];
+    __device__ static inline kittens::hip_semaphore &O_arrived(megakernel::state<config> &s) {
+        // return s.semaphores()[1];
+         return *reinterpret_cast<kittens::hip_semaphore*>(&s.semaphores()[1]);
     }
-    __device__ static inline kittens::semaphore &L_arrived(megakernel::state<config> &s) {
-        return s.semaphores()[2];
+    __device__ static inline kittens::hip_semaphore &L_arrived(megakernel::state<config> &s) {
+        // return s.semaphores()[2];
+         return *reinterpret_cast<kittens::hip_semaphore*>(&s.semaphores()[2]);
     }
-    __device__ static inline kittens::semaphore &K_arrived(megakernel::state<config> &s, int stage) {
-        return s.semaphores()[3 + stage * 2];
+    __device__ static inline kittens::hip_semaphore &K_arrived(megakernel::state<config> &s, int stage) {
+        // return s.semaphores()[3 + stage * 2];
+         return *reinterpret_cast<kittens::hip_semaphore*>(&s.semaphores()[3 + stage * 2]);
     }
-    __device__ static inline kittens::semaphore &V_arrived(megakernel::state<config> &s, int stage) {
-        return s.semaphores()[3 + stage * 2 + 1];
+    __device__ static inline kittens::hip_semaphore &V_arrived(megakernel::state<config> &s, int stage) {
+        // return s.semaphores()[3 + stage * 2 + 1];
+        return *reinterpret_cast<kittens::hip_semaphore*>(&s.semaphores()[3 + stage * 2 + 1]);
     }
-    __device__ static inline kittens::semaphore &K_finished(megakernel::state<config> &s,
+    __device__ static inline kittens::hip_semaphore &K_finished(megakernel::state<config> &s,
                                                    int stage) {
-        return s.semaphores()[3 + NUM_STAGES * 2 + stage * 2];
+        return *reinterpret_cast<kittens::hip_semaphore*>(&s.semaphores()[3 + NUM_STAGES * 2 + stage * 2]);
+        // return s.semaphores()[3 + NUM_STAGES * 2 + stage * 2];
     }
-    __device__ static inline kittens::semaphore &V_finished(megakernel::state<config> &s,
+    __device__ static inline kittens::hip_semaphore &V_finished(megakernel::state<config> &s,
                                                    int stage) {
-        return s.semaphores()[3 + NUM_STAGES * 2 + stage * 2 + 1];
+        // return s.semaphores()[3 + NUM_STAGES * 2 + stage * 2 + 1];
+        return *reinterpret_cast<kittens::hip_semaphore*>(&s.semaphores()[3 + NUM_STAGES * 2 + stage * 2 + 1]);
     }
 
     __device__ static inline void wait_QOL_page(megakernel::state<config> &s) {
@@ -302,17 +340,33 @@ template <typename config, typename globals> struct attention_partial {
             int ret_order[13] = {2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 0, 1};
             return ret_order[query];
         }
+
+        // q is query latr
+        // l is normalization layer
         static __device__ int init_semaphores(const globals &g,
                                               megakernel::state<config> &s) {
-            init_semaphore(Q_arrived(s), 0, 1);
-            init_semaphore(O_arrived(s), 0, 1);
-            init_semaphore(L_arrived(s), 0, 1);
+            // init_semaphore(Q_arrived(s), 0, 1);
+            // init_semaphore(O_arrived(s), 0, 1);
+            // init_semaphore(L_arrived(s), 0, 1);
+            // for (int i = 0; i < NUM_STAGES; i++) {
+            //     init_semaphore(K_arrived(s, i), 0, 1);
+            //     init_semaphore(V_arrived(s, i), 0, 1);
+            //     init_semaphore(K_finished(s, i), 0, 1);
+            //     init_semaphore(V_finished(s, i), 0, 1);
+            // }
+            // return 3 + 4 * NUM_STAGES;
+
+            Q_arrived(s).init(0);
+            O_arrived(s).init(0);
+            L_arrived(s).init(0);
+
             for (int i = 0; i < NUM_STAGES; i++) {
-                init_semaphore(K_arrived(s, i), 0, 1);
-                init_semaphore(V_arrived(s, i), 0, 1);
-                init_semaphore(K_finished(s, i), 0, 1);
-                init_semaphore(V_finished(s, i), 0, 1);
+                K_arrived(s, i).init(0);
+                V_arrived(s, i).init(0);
+                K_finished(s, i).init(0);
+                V_finished(s, i).init(0);
             }
+
             return 3 + 4 * NUM_STAGES;
         }
     };
@@ -393,8 +447,11 @@ template <typename config, typename globals> struct attention_partial {
                 if (i >= NUM_STAGES) {
                     // Assuming 'kittens::wait' maps to a compatible barrier wait 
                     // or is defined in your 'megakernel::state' utils.
-                    kittens::wait(K_finished(s, stage), (i / NUM_STAGES - 1) % 2);
-                    kittens::wait(V_finished(s, stage), (i / NUM_STAGES - 1) % 2);
+                    // kittens::wait(K_finished(s, stage), (i / NUM_STAGES - 1) % 2);
+                    // kittens::wait(V_finished(s, stage), (i / NUM_STAGES - 1) % 2);
+
+                    K_finished(s, stage).wait(i / NUM_STAGES);
+                    V_finished(s, stage).wait(i / NUM_STAGES);
                 }
 
                 if (cur_blk_idx == end_blk_idx - 1 &&
@@ -412,13 +469,14 @@ template <typename config, typename globals> struct attention_partial {
                 );
                 // If you are using mbarriers to track arrival manually, signal here:
                 // K_arrived(s, stage).arrive(); 
+                K_arrived(s, stage).arrive();
 
                 // Load V tile asynchronously
                 kittens::load(
                     V_smem, g.v_cache,
                     {inst.layer_idx, cur_blk_idx, inst.kv_head_idx, 0}
                 );
-                // V_arrived(s, stage).arrive();
+                V_arrived(s, stage).arrive();
             }
         }
     };
@@ -486,6 +544,8 @@ template <typename config, typename globals> struct attention_partial {
 
                 load_Q_async(Q_smem, g.q_post_rope, q_head_start_idx);
 
+                // wait for q to land before reading from it
+                __builtin_amdgcn_s_waitcnt(0); 
                 // Wait for Q to arrive
                 // HIP: The async load function now waits internally.
                 // kittens::warp::load_async_wait(); // No longer needed
@@ -500,12 +560,16 @@ template <typename config, typename globals> struct attention_partial {
 
                     // Perform Q @ K.T
                     kittens::warp::zero(attn_fl_reg);
-                    kittens::warp::wait(K_arrived(s, stage), (i / NUM_STAGES) % 2);
+                    // kittens::warp::wait(K_arrived(s, stage), (i / NUM_STAGES) % 2);
+
+                    K_arrived(s, stage).wait((i/NUM_STAGES)+1);
 
                     kittens::warp::load(K_reg, K_smem);
                     kittens::warp::mma_ABt(attn_fl_reg, Q_reg, K_reg, attn_fl_reg);
                     __builtin_amdgcn_s_barrier()
-                    kittens::warp::arrive(K_finished(s, stage));
+                    // Signal we are done reading K
+                    K_finished(s, stage).arrive();
+                    // kittens::warp::arrive(K_finished(s, stage));
 
                     // Mask out invalid positions at the end
                     if ((i + start_blk_idx + 1) * LLAMA_1B_KV_BLOCK_SIZE >
@@ -534,14 +598,18 @@ template <typename config, typename globals> struct attention_partial {
 
                     // Normalize and accumulate numerator (A @ V)
                     kittens::warp::mul_row(O_reg, O_reg, diff_scaled_max_vec_reg);
-                    kittens::warp::wait(V_arrived(s, stage), (i / NUM_STAGES) % 2);
+
+                    // wait for v
+                    V_arrived(s, stage).wait((i/NUM_STAGES)+1);
+                    // kittens::warp::wait(V_arrived(s, stage), (i / NUM_STAGES) % 2);
 
                     kittens::warp::load(V_reg, V_smem);
                     kittens::warp::copy(attn_bf_reg,
                                attn_fl_reg); // Convert to bf16 to do matmul
                     kittens::warp::mma_AB(O_reg, attn_bf_reg, V_reg, O_reg);
                     __builtin_amdgcn_s_barrier()
-                    kittens::warp::arrive(V_finished(s, stage));
+                    // kittens::warp::arrive(V_finished(s, stage));
+                    V_finished(s, stage).arrive();
 
                     // Normalize and accumulate demoniator
                     kittens::warp::mul(norm_vec_reg, norm_vec_reg,
@@ -572,10 +640,12 @@ template <typename config, typename globals> struct attention_partial {
                 store_4_rows(O_smem, O_reg, q_head_local_idx);
                 __builtin_amdgcn_s_barrier()
 
-                kittens::warp::arrive(O_arrived(s));
+                // kittens::warp::arrive(O_arrived(s));
+                O_arrived(s).arrive(); // Use arrive() here 
                 kittens::warp::store(L_smem, L_reg);
                 __builtin_amdgcn_s_barrier()
-                kittens::warp::arrive(L_arrived(s));
+                // kittens::warp::arrive(L_arrived(s));
+                L_arrived(s).arrive(); // Use arrive() h
             }
         }
     };
@@ -586,7 +656,8 @@ template <typename config, typename globals> struct attention_partial {
             auto O_smem = get_O_smem(s);
 
             if (kittens::laneid() == 0) {
-                kittens::wait(O_arrived(s), 0);
+                // kittens::wait(O_arrived(s), 0);
+                O_arrived(s).wait(1);
                 s.record(megakernel::TEVENT_OUTPUT_READY);
             }
             __builtin_amdgcn_s_barrier()
@@ -621,7 +692,8 @@ template <typename config, typename globals> struct attention_partial {
             // Store partial attention output to global memory
             if (kittens::warp::laneid() == 0) {
                 o_sv(&O_smem)[GQA_RATIO] = get_O_smem(s);
-                kittens::wait(O_arrived(s), 0);
+                // kittens::wait(O_arrived(s), 0);
+                Q_arrived(s).wait(1);
                 s.record(megakernel::TEVENT_OUTPUT_READY);
 
                 for (int head_offset = 0; head_offset < GQA_RATIO;
@@ -654,7 +726,8 @@ template <typename config, typename globals> struct attention_partial {
             // Store LSE to global memory
             if (laneid < GQA_RATIO && !skip_attn_reduction) {
                 l_sv &L_smem = get_L_smem(s);
-                kittens::wait(L_arrived(s), 0);
+                // kittens::wait(L_arrived(s), 0);
+                L_arrived(s).wait(1);
 
                 // Can't do anything fancy with writing 4 spread-out values.
                 // We can do this in the consumer if we want to (without using
