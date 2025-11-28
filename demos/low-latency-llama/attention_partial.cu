@@ -693,7 +693,7 @@ template <typename config, typename globals> struct attention_partial {
             if (kittens::warp::laneid() == 0) {
                 o_sv(&O_smem)[GQA_RATIO] = get_O_smem(s);
                 // kittens::wait(O_arrived(s), 0);
-                Q_arrived(s).wait(1);
+                O_arrived(s).wait(1);
                 s.record(megakernel::TEVENT_OUTPUT_READY);
 
                 for (int head_offset = 0; head_offset < GQA_RATIO;
