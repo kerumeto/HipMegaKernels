@@ -93,33 +93,27 @@ template <typename config, typename globals> struct attention_partial {
 
     // We have 32 dynamic kittens::semaphores total
     __device__ static inline kittens::hip_semaphore &Q_arrived(megakernel::state<config> &s) {
-        return *reinterpret_cast<kittens::hip_semaphore*>(&s.semaphores()[0]);
+        return s.semaphores()[0];
     }
     __device__ static inline kittens::hip_semaphore &O_arrived(megakernel::state<config> &s) {
-        // return s.semaphores()[1];
-         return *reinterpret_cast<kittens::hip_semaphore*>(&s.semaphores()[1]);
+        return s.semaphores()[1];
     }
     __device__ static inline kittens::hip_semaphore &L_arrived(megakernel::state<config> &s) {
-        // return s.semaphores()[2];
-         return *reinterpret_cast<kittens::hip_semaphore*>(&s.semaphores()[2]);
+        return s.semaphores()[2];
     }
     __device__ static inline kittens::hip_semaphore &K_arrived(megakernel::state<config> &s, int stage) {
-        // return s.semaphores()[3 + stage * 2];
-         return *reinterpret_cast<kittens::hip_semaphore*>(&s.semaphores()[3 + stage * 2]);
+        return s.semaphores()[3 + stage * 2];
     }
     __device__ static inline kittens::hip_semaphore &V_arrived(megakernel::state<config> &s, int stage) {
-        // return s.semaphores()[3 + stage * 2 + 1];
-        return *reinterpret_cast<kittens::hip_semaphore*>(&s.semaphores()[3 + stage * 2 + 1]);
+        return s.semaphores()[3 + stage * 2 + 1];
     }
     __device__ static inline kittens::hip_semaphore &K_finished(megakernel::state<config> &s,
                                                    int stage) {
-        return *reinterpret_cast<kittens::hip_semaphore*>(&s.semaphores()[3 + NUM_STAGES * 2 + stage * 2]);
-        // return s.semaphores()[3 + NUM_STAGES * 2 + stage * 2];
+        return s.semaphores()[3 + NUM_STAGES * 2 + stage * 2];
     }
     __device__ static inline kittens::hip_semaphore &V_finished(megakernel::state<config> &s,
                                                    int stage) {
-        // return s.semaphores()[3 + NUM_STAGES * 2 + stage * 2 + 1];
-        return *reinterpret_cast<kittens::hip_semaphore*>(&s.semaphores()[3 + NUM_STAGES * 2 + stage * 2 + 1]);
+        return s.semaphores()[3 + NUM_STAGES * 2 + stage * 2 + 1];
     }
 
     __device__ static inline void wait_QOL_page(megakernel::state<config> &s) {

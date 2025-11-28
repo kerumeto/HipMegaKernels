@@ -14,7 +14,7 @@ template <typename config> struct __align__(128) instruction_state_t {
     int pid_order[config::NUM_PAGES];
     int padding[((config::NUM_PAGES + 31) & ~31) -
                 config::NUM_PAGES]; // Round up to multiple of 32
-    kittens::semaphore semaphores[config::DYNAMIC_SEMAPHORES];
+    kittens::hip_semaphore semaphores[config::DYNAMIC_SEMAPHORES];
     int scratch[config::SCRATCH_BYTES / 4];
 };
 
