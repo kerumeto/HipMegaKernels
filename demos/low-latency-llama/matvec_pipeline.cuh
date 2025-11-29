@@ -109,7 +109,7 @@ struct matvec_pipeline {
             // init_semaphore(weights_arrived(s, i), 1);
             // init_semaphore(weights_finished(s, i), Config::NUM_CONSUMER_WARPS);
             weights_arrived(s, i).init(0);
-            weights_finished(s, i).init(0);
+            weights_finished(s, i).init(0); // no need for num consumer warps since we just have a counter
         }
         for (int i = 0; i < OUTPUT_PIPELINE_STAGES; i++) {
             // init_semaphore(outputs_arrived(s, i), Config::NUM_CONSUMER_WARPS);
@@ -137,7 +137,7 @@ struct matvec_pipeline {
 
                 // 
                 if (iter >= INPUT_PIPELINE_STAGES) {
-                    int target = (iter / INPUT_PIPELINE_STAGES); 
+                    int target = (iter / INPUT_PIPELINE_STAGES); // crcular buffer so wait till consumer to finish consuming first avaiable slot
                     weights_finished(s, input_stage).wait(target);
                 }
 
@@ -193,7 +193,7 @@ struct matvec_pipeline {
             // kittens::wait(outputs_finished(s, output_stage),
             //      (i % (2 * OUTPUT_PIPELINE_STAGES)) < OUTPUT_PIPELINE_STAGES);
 
-            int weight_target = (i / INPUT_PIPELINE_STAGES)+1;
+            int weight_target = (i / INPUT_PIPELINE_STAGES)+1; // wait for producer to post something in enxt buffer slot
             weights_arrived(s, input_stage).wait(weight_wait_target);
 
             if (i >= OUTPUT_PIPELINE_STAGES) {
