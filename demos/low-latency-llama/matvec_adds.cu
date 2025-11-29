@@ -15,6 +15,40 @@ template <int _EXPECTED_ARRIVAL_COUNT, auto WeightsPtr,
           typename Config = default_config,
           typename Globals = llama_1b_globals>
 
+
+template <typename GlobalTile, typename SharedTile, typename Coord>
+__device__ inline void manual_hip_store_add(GlobalTile& global_dest, const SharedTile& shared_src, const Coord& coord) {
+    constexpr int Size = SharedTile::length;
+
+    // shared registers
+    kittens::rv_bf<Size> computed_reg;
+    // from global register
+    kittens::rv_bf<Size> residual_reg; 
+
+    // to store in global register
+    kittens::rv_bf<Size> result_reg;  
+
+    kittens::rv_fl<Size> comp_f, res_f; // intermediate rgisters
+
+    kittens::warp::load(computed_reg, shared_src);
+    kittens::warp::load(residual_reg, global_dest, coord);
+
+    // convert to float
+    kittens::warp::copy(comp_f, computed_reg);
+    kittens::warp::copy(res_f, residual_reg);
+
+    // add and store in res_F
+    kittens::warp::add(res_f, res_f, comp_f);
+
+    // store as bf16 again
+    kittens::warp::copy(result_reg, res_f);
+
+    kittens::warp::store(global_dest, result_reg, coord);
+
+    __threadfence();
+    __builtin_amdgcn_s_waitcnt(0);
+}
+
 struct MatVecAddOp {
     static constexpr int opcode = _opcode;
     static constexpr int prev_opcode = _prev_opcode;
@@ -82,11 +116,12 @@ struct MatVecAddOp {
             kittens::warp::sync();
 
             if (kittens::warp::laneid() == 0) {
-                auto &OutputActivations =
-                    g.*OutputActivationsPtr; // object in global memory
-                kittens::tma::store_add_async<cache_policy::EVICT_LAST>(
-                    OutputActivations, output_smem_bf, {block_idx});
-                kittens::tma::store_async_read_wait();
+                // auto &OutputActivations =
+                //     g.*OutputActivationsPtr; // object in global memory
+                // kittens::tma::store_add_async<cache_policy::EVICT_LAST>(
+                //     OutputActivations, output_smem_bf, {block_idx});
+                // kittens::tma::store_async_read_wait();
+                manual_hip_store_add(g.*OutputActivationsPtr, output_smem_bf, coord<>{block_idx});
             }
 
             kittens::warp::sync();
@@ -138,7 +173,8 @@ struct MatVecAddOp {
                 while (*(volatile int *)&g.Bar[{inst.layer, prev_opcode - 1,
                                                 inst.reduction_block_idx}] <
                        EXPECTED_ARRIVAL_COUNT) {
-                    __nanosleep(Config::GMEM_SPIN_LOOP_SLEEP_NANOS);
+                    // __nanosleep(Config::GMEM_SPIN_LOOP_SLEEP_NANOS);
+                    __builtin_amdgcn_s_sleep(1);
                 }
                 s.record(megakernel::TEVENT_DONE_GMEM_WAIT);
 
@@ -175,8 +211,9 @@ struct MatVecAddOp {
                 s.record(megakernel::TEVENT_AT_GMEM_STORE);
                 parsed_instruction inst{s};
 
-                kittens::tma::store_async_wait(); // not just read wait! full wait! must
-                                         // be visible in global!
+                // kittens::tma::store_async_wait(); // not just read wait! full wait! must
+                //                          // be visible in global!
+                __builtin_amdgcn_s_waitcnt(0);
 
                 // asm volatile("fence.acq_rel.gpu;\n"); // possible we need sc
                 // here but I don't think so.
