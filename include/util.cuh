@@ -28,7 +28,7 @@ __device__ inline unsigned int get_smid() {
 
 // amd assembly doesnt return a linear mapping, it returns some complex bitfield but in instruction_fetch.cuh, we need to use it as an index into g_instructions
 // i think we can just return blockIdx.x?
-
+// CHECK THIS
 __device__ inline unsigned int get_worker_id() {
     // return get_smid();
     return blockIdx.x;

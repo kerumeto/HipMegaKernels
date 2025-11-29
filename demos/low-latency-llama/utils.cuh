@@ -1,6 +1,7 @@
 #pragma once
 
 #include "llama.cuh"
+#include <hip/hip_runtime.h>
 
 template <typename Config, kittens::ducks::sv::all sv_t>
 __device__ static inline auto
@@ -34,6 +35,39 @@ rms_norm(const sv_t &rms_scale_smem, const sv_t &activations_smem,
     kittens::warp::mul(activations_vec, activations_vec, rms_scale_vec);
 
     return activations_vec;
+}
+
+template <typename GlobalTile, typename SharedTile, typename Coord>
+__device__ inline void manual_hip_store_add(GlobalTile& global_dest, const SharedTile& shared_src, const Coord& coord) {
+    constexpr int Size = SharedTile::length;
+
+    // shared registers
+    kittens::rv_bf<Size> computed_reg;
+    // from global register
+    kittens::rv_bf<Size> residual_reg; 
+
+    // to store in global register
+    kittens::rv_bf<Size> result_reg;  
+
+    kittens::rv_fl<Size> comp_f, res_f; // intermediate rgisters
+
+    kittens::warp::load(computed_reg, shared_src);
+    kittens::warp::load(residual_reg, global_dest, coord);
+
+    // convert to float
+    kittens::warp::copy(comp_f, computed_reg);
+    kittens::warp::copy(res_f, residual_reg);
+
+    // add and store in res_F
+    kittens::warp::add(res_f, res_f, comp_f);
+
+    // store as bf16 again
+    kittens::warp::copy(result_reg, res_f);
+
+    kittens::warp::store(global_dest, result_reg, coord);
+
+    __threadfence();
+    __builtin_amdgcn_s_waitcnt(0);
 }
 
 #ifdef KITTENS_BLACKWELL

@@ -1,5 +1,6 @@
 #include "llama.cuh"
 #include "utils.cuh"
+#include <hip/hip_runtime.h>
 
 using namespace kittens;
 using namespace megakernel;
@@ -35,24 +36,30 @@ template <typename Config, typename Globals> struct rms_upgate_silu {
             while (
                 *(volatile int *)&g.Bar[{inst.layer_idx, prev_opcode - 1, 0}] <
                 EXPECTED_ARRIVAL_COUNT) {
-                __nanosleep(Config::GMEM_SPIN_LOOP_SLEEP_NANOS);
+                // __nanosleep(Config::GMEM_SPIN_LOOP_SLEEP_NANOS);
+                __builtin_amdgcn_s_sleep(1);
             }
         }
 
         static __device__ inline void
         load_iter(megakernel::state<Config> &s, const globals &g, parsed_instruction &inst,
                   int iter, int col_idx, kittens::st_bf<16, 512> &weight_chunk,
-                  kittens::semaphore &sem) {
+                  kittens::hip_semaphore &sem) {
             auto block_idx = inst.block_idxs[iter / 2];
             if (iter % 2 == 0) {
-                kittens::tma::load_async<dim::ROW, cache_policy::EVICT_FIRST>(
-                    weight_chunk, g.up_weights,
-                    {inst.layer_idx, block_idx, col_idx}, sem);
+                // kittens::tma::load_async<dim::ROW, cache_policy::EVICT_FIRST>(
+                //     weight_chunk, g.up_weights,
+                //     {inst.layer_idx, block_idx, col_idx}, sem);
+                kittens::load(weight_chunk, g.up_weights, 
+                              {inst.layer_idx, block_idx, col_idx});
             } else {
-                kittens::tma::load_async<dim::ROW, cache_policy::EVICT_FIRST>(
-                    weight_chunk, g.gate_weights,
-                    {inst.layer_idx, block_idx, col_idx}, sem);
+                // kittens::tma::load_async<dim::ROW, cache_policy::EVICT_FIRST>(
+                //     weight_chunk, g.gate_weights,
+                //     {inst.layer_idx, block_idx, col_idx}, sem);
+                kittens::load(weight_chunk, g.gate_weights, 
+                              {inst.layer_idx, block_idx, col_idx});
             }
+            sem.arrive();
         }
 
         static __device__ inline void store(megakernel::state<Config> &s, const Globals &g,
@@ -106,9 +113,14 @@ template <typename Config, typename Globals> struct rms_upgate_silu {
             kittens::warp::sync();
 
             if (kittens::laneid() == 0) {
-                kittens::tma::store_async<cache_policy::EVICT_LAST>(g.silu_out, out_smem,
-                                                           {block_idx});
-                kittens::tma::store_async_wait();
+                // kittens::tma::store_async<cache_policy::EVICT_LAST>(g.silu_out, out_smem,
+                //                                            {block_idx});
+                // kittens::tma::store_async_wait();
+
+                kittens::store(g.silu_out, out_smem, {block_idx});
+                
+                __threadfence();
+                __builtin_amdgcn_s_waitcnt(0);
 
                 s.record(megakernel::TEVENT_AT_GMEM_STORE);
                 // asm volatile("fence.acq_rel.gpu;");

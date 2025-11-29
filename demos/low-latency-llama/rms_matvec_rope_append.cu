@@ -1,6 +1,7 @@
 #include "llama.cuh"
 #include "utils.cuh"
 #include "matvec_pipeline.cuh"
+#include <hip/hip_runtime.h>
 
 using namespace kittens;
 using namespace megakernel;
@@ -54,7 +55,8 @@ template <typename Config, typename Globals> struct rms_qkv_rope_append {
                     *(volatile int *)&g.Bar[{inst.layer_idx - 1,
                                              OPCODE_DownProjResidual - 1, 0}] <
                     EXPECTED_ARRIVAL_COUNT) {
-                    __nanosleep(Config::GMEM_SPIN_LOOP_SLEEP_NANOS);
+                    // __nanosleep(Config::GMEM_SPIN_LOOP_SLEEP_NANOS);
+                    __builtin_amdgcn_s_sleep(1);
                 }
             }
         }
@@ -62,11 +64,14 @@ template <typename Config, typename Globals> struct rms_qkv_rope_append {
         static __device__ inline void
         load_iter(megakernel::state<Config> &s, const globals &g, parsed_instruction &inst,
                   int iter, int col_idx, kittens::st_bf<16, 512> &weight_chunk,
-                  kittens::semaphore &sem) {
+                  kittens::hip_semaphore &sem) {
             auto block_idx = inst.start_block_idx + iter;
-            kittens::tma::load_async<dim::ROW, cache_policy::EVICT_FIRST>(
-                weight_chunk, g.qkv_weights,
-                {inst.layer_idx, block_idx, col_idx}, sem);
+            // kittens::tma::load_async<dim::ROW, cache_policy::EVICT_FIRST>(
+            //     weight_chunk, g.qkv_weights,
+            //     {inst.layer_idx, block_idx, col_idx}, sem);
+            kittens::load(weight_chunk, g.qkv_weights, 
+                          {inst.layer_idx, block_idx, col_idx});
+            sem.arrive();
         }
 
         static __device__ inline void store(megakernel::state<Config> &s, const Globals &g,
@@ -91,7 +96,8 @@ template <typename Config, typename Globals> struct rms_qkv_rope_append {
                           pipeline::SCRATCH_BYTES_PER_WARP>(
                 output_scratch_start, qkv_proj);
 
-            kittens::wait(rope_arrived(s), 0);
+            // kittens::wait(rope_arrived(s), 0);
+            rope_arrived(s).wait(1);
 
             auto head_chunk = block_idx % 4;
 
@@ -103,6 +109,11 @@ template <typename Config, typename Globals> struct rms_qkv_rope_append {
             kittens::warp::load(rope_cos, rope_cos_sv);
             kittens::warp::load(rope_sin, rope_sin_sv);
 
+            /**
+             * IMPORTANT: CHECK THIS. I dont know if this mask suff will work on amd / have to loop at hipkittens for this since lanid() is not same for Mi300x and that might mess 
+             * with mod
+             * __shfl_sync is NVIDIA intrinsic. HipKittens should maps this to __shfl. cjeck if this maping exists or else  use __shfl directly
+             */
             if (block_idx < V_BLK_START) { // only Q & K need RoPE
 
                 // Fetch the neighbor values
@@ -127,36 +138,43 @@ template <typename Config, typename Globals> struct rms_qkv_rope_append {
             if (kittens::laneid() == 0) {
 
                 if (block_idx < K_BLK_START) { // Q
-                    kittens::tma::store_async<cache_policy::EVICT_LAST>(
-                        g.q_post_rope, qkv_proj_smem_bf, {0, 0, 0, block_idx});
+                    // kittens::tma::store_async<cache_policy::EVICT_LAST>(
+                    //     g.q_post_rope, qkv_proj_smem_bf, {0, 0, 0, block_idx});
+                    kittens::store(g.q_post_rope, qkv_proj_smem_bf, {0, 0, 0, block_idx});
                 } else if (block_idx < V_BLK_START) { // K
                     int base_index =
                         (block_idx - K_BLK_START) * Globals::matvec_block_size;
                     int head_idx = base_index / Globals::head_dim;
                     int dim_idx = (base_index % Globals::head_dim) /
                                   Globals::matvec_block_size;
-                    kittens::tma::store_async<cache_policy::EVICT_LAST>(
-                        g.k_cache, qkv_proj_smem_bf,
-                        {inst.layer_idx, static_cast<int>(g.pos_id), head_idx,
-                         dim_idx});
+                    // kittens::tma::store_async<cache_policy::EVICT_LAST>(
+                    //     g.k_cache, qkv_proj_smem_bf,
+                    //     {inst.layer_idx, static_cast<int>(g.pos_id), head_idx,
+                    //      dim_idx});
+                    kittens::store(g.k_cache, qkv_proj_smem_bf,
+                        {inst.layer_idx, static_cast<int>(g.pos_id), head_idx, dim_idx});
                 } else { // V
                     int base_index =
                         (block_idx - V_BLK_START) * Globals::matvec_block_size;
                     int head_idx = base_index / Globals::head_dim;
                     int dim_idx = (base_index % Globals::head_dim) /
                                   Globals::matvec_block_size;
-                    kittens::tma::store_async<cache_policy::EVICT_LAST>(
-                        g.v_cache, qkv_proj_smem_bf,
-                        {inst.layer_idx, static_cast<int>(g.pos_id), head_idx,
-                         dim_idx});
+                    // kittens::tma::store_async<cache_policy::EVICT_LAST>(
+                    //     g.v_cache, qkv_proj_smem_bf,
+                    //     {inst.layer_idx, static_cast<int>(g.pos_id), head_idx,
+                    //      dim_idx});
+                    kittens::store(g.v_cache, qkv_proj_smem_bf,
+                        {inst.layer_idx, static_cast<int>(g.pos_id), head_idx, dim_idx});
                 }
 
                 s.record(megakernel::TEVENT_AT_GMEM_STORE);
 
-                kittens::tma::store_async_wait(); // not just read wait! full wait! must
+                // kittens::tma::store_async_wait(); // not just read wait! full wait! must
                                          // be visible in global!
                 // asm volatile("fence.acq_rel.gpu;\n"); // possible we need sc
                 // here but I don't think so.
+                __threadfence();
+                __builtin_amdgcn_s_waitcnt(0);
 
                 atomicAdd(&g.Bar[{inst.layer_idx, opcode - 1, block_idx / 4}],
                           1);
@@ -172,7 +190,7 @@ template <typename Config, typename Globals> struct rms_qkv_rope_append {
                             pipeline_specifics, &Globals::hidden_states,
                             &Globals::attn_norm_weights>;
 
-    __device__ static inline kittens::semaphore &rope_arrived(megakernel::state<Config> &s) {
+    __device__ static inline kittens::hip_semaphore &rope_arrived(megakernel::state<Config> &s) {
         return s.semaphores()[pipeline::SEM_COUNT];
     }
 
@@ -185,7 +203,8 @@ template <typename Config, typename Globals> struct rms_qkv_rope_append {
         static __device__ int init_semaphores(const Globals &g,
                                               megakernel::state<Config> &s) {
             pipeline::init_semaphores(s);
-            init_semaphore(rope_arrived(s), 1);
+            // init_semaphore(rope_arrived(s), 1);
+            rope_arrived(s).init(0);
             return pipeline::SEM_COUNT + 1;
         }
     };
@@ -196,14 +215,18 @@ template <typename Config, typename Globals> struct rms_qkv_rope_append {
                 auto &rope_sin = get_rope_sin(s);
 
                 auto &sem = rope_arrived(s);
-                kittens::tma::expect(sem, rope_cos, rope_sin);
+                // kittens::tma::expect(sem, rope_cos, rope_sin);
 
-                kittens::tma::load_async<cache_policy::EVICT_LAST>(
-                    rope_cos, g.rope_cos, {0, 0, static_cast<int>(g.pos_id), 0},
-                    sem);
-                kittens::tma::load_async<cache_policy::EVICT_LAST>(
-                    rope_sin, g.rope_sin, {0, 0, static_cast<int>(g.pos_id), 0},
-                    sem);
+                // kittens::tma::load_async<cache_policy::EVICT_LAST>(
+                //     rope_cos, g.rope_cos, {0, 0, static_cast<int>(g.pos_id), 0},
+                //     sem);
+                kittens::load(rope_cos, g.rope_cos, {0, 0, static_cast<int>(g.pos_id), 0});
+                sem.arrive();
+                // kittens::tma::load_async<cache_policy::EVICT_LAST>(
+                //     rope_sin, g.rope_sin, {0, 0, static_cast<int>(g.pos_id), 0},
+                //     sem);
+                kittens::load(rope_sin, g.rope_sin, {0, 0, static_cast<int>(g.pos_id), 0});
+                sem.arrive();
             }
 
             parsed_instruction inst{s};

@@ -1,6 +1,7 @@
 #pragma once
 
 #include "llama.cuh"
+#include <hip/hip_runtime.h>
 
 template <typename Config, typename Globals, typename parsed_instruction,
           typename pipeline_specifics>
@@ -35,22 +36,22 @@ struct matvec_pipeline {
         return s.pid(WEIGHTS_START_PAGE + stage * STAGE_PAGES + offset);
     }
 
-    __device__ static inline kittens::semaphore &activations_arrived(megakernel::state<Config> &s) {
+    __device__ static inline kittens::hip_semaphore &activations_arrived(megakernel::state<Config> &s) {
         return s.semaphores()[0];
     }
-    __device__ static inline kittens::semaphore &weights_arrived(megakernel::state<Config> &s,
+    __device__ static inline kittens::hip_semaphore &weights_arrived(megakernel::state<Config> &s,
                                                         int stage) {
         return s.semaphores()[1 + stage];
     }
-    __device__ static inline kittens::semaphore &weights_finished(megakernel::state<Config> &s,
+    __device__ static inline kittens::hip_semaphore &weights_finished(megakernel::state<Config> &s,
                                                          int stage) {
         return s.semaphores()[1 + INPUT_PIPELINE_STAGES + stage];
     }
-    __device__ static inline kittens::semaphore &outputs_arrived(megakernel::state<Config> &s,
+    __device__ static inline kittens::hip_semaphore &outputs_arrived(megakernel::state<Config> &s,
                                                         int stage) {
         return s.semaphores()[1 + 2 * INPUT_PIPELINE_STAGES + stage];
     }
-    __device__ static inline kittens::semaphore &outputs_finished(megakernel::state<Config> &s,
+    __device__ static inline kittens::hip_semaphore &outputs_finished(megakernel::state<Config> &s,
                                                          int stage) {
         return s.semaphores()[1 + 2 * INPUT_PIPELINE_STAGES +
                               OUTPUT_PIPELINE_STAGES + stage];
@@ -102,14 +103,19 @@ struct matvec_pipeline {
     }
 
     __device__ static inline int init_semaphores(megakernel::state<Config> &s) {
-        init_semaphore(activations_arrived(s), 1);
+        // init_semaphore(activations_arrived(s), 1);
+        activations_arrived(s).init(0);
         for (int i = 0; i < INPUT_PIPELINE_STAGES; i++) {
-            init_semaphore(weights_arrived(s, i), 1);
-            init_semaphore(weights_finished(s, i), Config::NUM_CONSUMER_WARPS);
+            // init_semaphore(weights_arrived(s, i), 1);
+            // init_semaphore(weights_finished(s, i), Config::NUM_CONSUMER_WARPS);
+            weights_arrived(s, i).init(0);
+            weights_finished(s, i).init(0);
         }
         for (int i = 0; i < OUTPUT_PIPELINE_STAGES; i++) {
-            init_semaphore(outputs_arrived(s, i), Config::NUM_CONSUMER_WARPS);
-            init_semaphore(outputs_finished(s, i), 1);
+            // init_semaphore(outputs_arrived(s, i), Config::NUM_CONSUMER_WARPS);
+            // init_semaphore(outputs_finished(s, i), 1);
+            outputs_arrived(s, i).init(0);
+            outputs_finished(s, i).init(0);
         }
         return SEM_COUNT;
     }
@@ -125,12 +131,20 @@ struct matvec_pipeline {
 
             int input_stage = 0;
             for (int iter = 0; iter < inst.iters; iter++) {
-                kittens::wait(weights_finished(s, input_stage),
-                     (iter % (2 * INPUT_PIPELINE_STAGES)) <
-                         INPUT_PIPELINE_STAGES);
+                // kittens::wait(weights_finished(s, input_stage),
+                //      (iter % (2 * INPUT_PIPELINE_STAGES)) <
+                //          INPUT_PIPELINE_STAGES);
+
+                // 
+                if (iter >= INPUT_PIPELINE_STAGES) {
+                    int target = (iter / INPUT_PIPELINE_STAGES); 
+                    weights_finished(s, input_stage).wait(target);
+                }
 
                 auto &sem = weights_arrived(s, input_stage);
-                kittens::tma::expect_bytes(sem, sizeof(kittens::bf16) * 2048 * 16);
+
+                // i dont think we need this for amd
+                // kittens::tma::expect_bytes(sem, sizeof(kittens::bf16) * 2048 * 16);
 #pragma unroll
                 for (int i = 0; i < 4; i++) {
                     int weight_page = get_weight_page(s, input_stage, i);
@@ -174,10 +188,19 @@ struct matvec_pipeline {
         int input_stage = 0, output_stage = 0;
         for (int i = 0; i < inst.iters; i++) {
             int weight_page = get_weight_page(s, input_stage, page_index);
-            kittens::wait(weights_arrived(s, input_stage),
-                 (i % (2 * INPUT_PIPELINE_STAGES)) >= INPUT_PIPELINE_STAGES);
-            kittens::wait(outputs_finished(s, output_stage),
-                 (i % (2 * OUTPUT_PIPELINE_STAGES)) < OUTPUT_PIPELINE_STAGES);
+            // kittens::wait(weights_arrived(s, input_stage),
+            //      (i % (2 * INPUT_PIPELINE_STAGES)) >= INPUT_PIPELINE_STAGES);
+            // kittens::wait(outputs_finished(s, output_stage),
+            //      (i % (2 * OUTPUT_PIPELINE_STAGES)) < OUTPUT_PIPELINE_STAGES);
+
+            int weight_target = (i / INPUT_PIPELINE_STAGES)+1;
+            weights_arrived(s, input_stage).wait(weight_wait_target);
+
+            if (i >= OUTPUT_PIPELINE_STAGES) {
+                int output_wait_target = (i / OUTPUT_PIPELINE_STAGES);
+                outputs_finished(s, output_stage).wait(output_wait_target);
+            }
+
             kittens::st_bf<16, REDUCTION_DIM_PER_WARP> &weights =
                 reinterpret_cast<kittens::st_bf<16, REDUCTION_DIM_PER_WARP> *>(
                     s.pages[weight_page].ptr())[kittens::warpid() % WARPS_PER_PAGE];
@@ -195,8 +218,10 @@ struct matvec_pipeline {
             matvec(out_smem, weights, activations_vec);
 
             kittens::warp::sync();
-            kittens::warp::arrive(outputs_arrived(s, output_stage));
-            kittens::warp::arrive(weights_finished(s, input_stage));
+            // kittens::warp::arrive(outputs_arrived(s, output_stage));
+            // kittens::warp::arrive(weights_finished(s, input_stage));
+            outputs_arrived(s, output_stage).arrive();
+            weights_finished(s, input_stage).arrive();
 
             if (i >= inst.iters - INPUT_PIPELINE_STAGES) {
 // Release pages.
@@ -219,10 +244,12 @@ struct matvec_pipeline {
         int output_stage = 0;
         for (int i = 0; i < inst.iters; i++) {
             auto &sem = outputs_arrived(s, output_stage);
-            auto bit =
-                (i % (2 * OUTPUT_PIPELINE_STAGES)) >= OUTPUT_PIPELINE_STAGES;
+            // auto bit =
+            //     (i % (2 * OUTPUT_PIPELINE_STAGES)) >= OUTPUT_PIPELINE_STAGES;
+            int wait_target = (i / OUTPUT_PIPELINE_STAGES) + 1;
+            outputs_arrived(s, output_stage).wait(wait_target);
 
-            kittens::wait(sem, bit);
+            // kittens::wait(sem, bit);
 
             if (i == 0) {
                 s.record(megakernel::TEVENT_FIRST_STORE);
@@ -230,12 +257,14 @@ struct matvec_pipeline {
                 s.record(megakernel::TEVENT_LAST_STORE);
             }
 
-            pipeline_specifics::store(s, g, inst, i, output_stage);
+            pipeline_specifics::store(s, g, inst, i, output_stage); // is this keepable?
 
             if ((i + 1) % iter_scale == 0) {
                 for (int j = 0; j < iter_scale; j++) {
                     auto stage_to_arrive = (i - j) % OUTPUT_PIPELINE_STAGES;
-                    kittens::warp::arrive(outputs_finished(s, stage_to_arrive));
+                    // kittens::warp::arrive(outputs_finished(s, stage_to_arrive));
+                    outputs_finished(s, stage_to_arrive).arrive();
+
                 }
             }
             output_stage = (output_stage + 1) % OUTPUT_PIPELINE_STAGES;
@@ -256,7 +285,7 @@ struct rms_matvec_pipeline
 
     static constexpr int SEM_COUNT = 1 + pipeline::SEM_COUNT;
 
-    __device__ static inline kittens::semaphore &rms_scale_arrived(megakernel::state<Config> &s) {
+    __device__ static inline kittens::hip_semaphore &rms_scale_arrived(megakernel::state<Config> &s) {
         return s.semaphores()[pipeline::SEM_COUNT];
     }
 
@@ -269,7 +298,8 @@ struct rms_matvec_pipeline
 
     __device__ static inline int init_semaphores(megakernel::state<Config> &s) {
         pipeline::init_semaphores(s);
-        init_semaphore(rms_scale_arrived(s), 1);
+        // init_semaphore(rms_scale_arrived(s), 1);
+        rms_scale_arrived(s).init(0);
         return SEM_COUNT;
     }
 
@@ -282,9 +312,11 @@ struct rms_matvec_pipeline
             auto &rms_scale = get_rms_scale(s);
             auto &sem = rms_scale_arrived(s);
 
-            kittens::tma::expect(sem, rms_scale);
-            kittens::tma::load_async<kittens::cache_policy::EVICT_LAST>(rms_scale, g.*RmsPtr,
-                                                      {layer_idx, 0}, sem);
+            // kittens::tma::expect(sem, rms_scale);
+            // kittens::tma::load_async<kittens::cache_policy::EVICT_LAST>(rms_scale, g.*RmsPtr,
+            //                                           {layer_idx, 0}, sem);
+            kittens::load(rms_scale, g.*RmsPtr, {layer_idx, 0});
+            sem.arrive();
         }
 
         pipeline::loader_loop(s, g);
@@ -335,7 +367,8 @@ struct rms_matvec_pipeline
 
         auto activation_page = get_activation_page(s);
 
-        kittens::wait(rms_scale_arrived(s), 0);
+        // kittens::wait(rms_scale_arrived(s), 0);
+        rms_scale_arrived(s).wait(1);
 
         auto activations_vec = rms_norm<Config>(
             rms_scale_smem, activations_smem, g.rms_norm_eps,
