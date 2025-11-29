@@ -45,7 +45,7 @@ struct default_config {
 
     static constexpr bool TIMING_RECORD_ENABLED = false;
 
-    static constexpr bool GMEM_SPIN_LOOP_SLEEP_NANOS = 20;
+    static constexpr bool GMEM_SPIN_LOOP_SLEEP_NANOS = 20; // why is this a bool. i assume this is just meant to represent true meaning it sleeps for 1 clock cycle
 
     static constexpr int CONSUMER_REGISTERS = 104;
     static constexpr int NON_CONSUMER_REGISTERS = 64;

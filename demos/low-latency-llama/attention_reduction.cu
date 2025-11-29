@@ -1,6 +1,7 @@
 #include "llama.cuh"
 #include <limits>
 
+#include <hip/hip_runtime.h>
 using namespace kittens;
 using namespace megakernel;
 
@@ -63,24 +64,24 @@ template <typename Config, typename Globals> struct attention_reduction {
                (Q_HEADS_PER_INSTRUCTION * 2) + q_head_local_idx;
     }
 
-    __device__ static inline kittens::semaphore &
+    __device__ static inline kittens::hip_semaphore &
     O_partial_arrived(megakernel::state<config> &s, int q_head_local_idx, int stage) {
         return s
             .semaphores()[O_partial_sem_idx(q_head_local_idx, stage, false)];
     }
-    __device__ static inline kittens::semaphore &
+    __device__ static inline kittens::hip_semaphore &
     O_partial_finished(megakernel::state<config> &s, int q_head_local_idx, int stage) {
         return s.semaphores()[O_partial_sem_idx(q_head_local_idx, stage, true)];
     }
-    __device__ static inline kittens::semaphore &
+    __device__ static inline kittens::hip_semaphore &
     L_partial_all_arrived(megakernel::state<config> &s, int q_head_local_idx) {
         return s.semaphores()[L_partial_sem_idx(q_head_local_idx, false)];
     }
-    __device__ static inline kittens::semaphore &
+    __device__ static inline kittens::hip_semaphore &
     L_partial_all_finished(megakernel::state<config> &s, int q_head_local_idx) {
         return s.semaphores()[L_partial_sem_idx(q_head_local_idx, true)];
     }
-    __device__ static inline kittens::semaphore &final_O_ready(megakernel::state<config> &s,
+    __device__ static inline kittens::hip_semaphore &final_O_ready(megakernel::state<config> &s,
                                                       int q_head_local_idx) {
         return s.semaphores()[Final_O_ready_sem_idx(q_head_local_idx)];
     }
@@ -193,17 +194,24 @@ template <typename Config, typename Globals> struct attention_reduction {
                        *(volatile int *)&g.Bar[{inst.layer_idx, prev_opcode - 1,
                                                 inst.q_head_start_idx + 3}] <
                            inst.num_partials) {
-                    __nanosleep(Config::GMEM_SPIN_LOOP_SLEEP_NANOS);
+                    // __nanosleep(Config::GMEM_SPIN_LOOP_SLEEP_NANOS);
+                    __builtin_amdgcn_s_sleep(1); // can we get by with 1
                 }
                 s.record(megakernel::TEVENT_DONE_GMEM_WAIT);
 
                 for (int i = 0; i < 4; ++i) {
                     l_partial_sv &L_smem = get_L_partial_smem(s, i);
-                    kittens::tma::expect(L_partial_all_arrived(s, i), L_smem);
-                    kittens::tma::load_async<cache_policy::EVICT_FIRST>(
+                    // kittens::tma::expect(L_partial_all_arrived(s, i), L_smem);
+                    // kittens::tma::load_async<cache_policy::EVICT_FIRST>(
+                    //     L_smem, g.attn_lse_intermediates,
+                    //     {0, 0, inst.q_head_start_idx + i, 0},
+                    //     L_partial_all_arrived(s, i));
+
+                    kittens::load(
                         L_smem, g.attn_lse_intermediates,
-                        {0, 0, inst.q_head_start_idx + i, 0},
-                        L_partial_all_arrived(s, i));
+                        {0, 0, inst.q_head_start_idx + i, 0}
+                    );
+                    L_partial_all_arrived(s, i).arrive();
                 }
 
                 for (int i = 0; i < inst.num_partials; ++i) {
@@ -213,15 +221,22 @@ template <typename Config, typename Globals> struct attention_reduction {
                         o_sv &O_smem = get_O_partial_smem(s, j, stage);
 
                         if (i >= NUM_STAGES) {
-                            int prev_phase = (i / NUM_STAGES - 1) % 2;
-                            kittens::wait(O_partial_finished(s, j, stage), prev_phase);
+                            // int prev_phase = (i / NUM_STAGES - 1) % 2;
+                            // kittens::wait(O_partial_finished(s, j, stage), prev_phase);
+                            int target = (i/NUM_STAGES); // no parity since that was for nvidia
+                            O_partial_finished(s, j, stage).wait(target);
                         }
 
-                        kittens::tma::expect(O_partial_arrived(s, j, stage), O_smem);
-                        kittens::tma::load_async<cache_policy::EVICT_FIRST>(
-                            O_smem, g.attn_out_intermediates,
-                            {0, inst.q_head_start_idx + j, cur_partial_idx, 0},
-                            O_partial_arrived(s, j, stage));
+                        // kittens::tma::expect(O_partial_arrived(s, j, stage), O_smem);
+                        // kittens::tma::load_async<cache_policy::EVICT_FIRST>(
+                        //     O_smem, g.attn_out_intermediates,
+                        //     {0, inst.q_head_start_idx + j, cur_partial_idx, 0},
+                        //     O_partial_arrived(s, j, stage));
+
+                        kittens::load(O_smem, g.attn_out_intermediates,
+                                      {0, inst.q_head_start_idx + j, cur_partial_idx, 0});
+                        
+                        O_partial_arrived(s, j, stage).arrive();
                     }
                 }
             }
@@ -244,7 +259,10 @@ template <typename Config, typename Globals> struct attention_reduction {
 
                 kittens::warp::zero(accumulated_out);
 
-                kittens::warp::wait(L_partial_all_arrived(s, q_head_local_idx), 0);
+                // kittens::warp::wait(L_partial_all_arrived(s, q_head_local_idx), 0);
+
+                L_partial_all_arrived(s, q_head_local_idx).wait(1);
+
                 if (kittens::laneid() == 0)
                     s.record(megakernel::TEVENT_CONSUMER_START + 16 + kittens::warpid());
                 l_partial_sv &L_smem = get_L_partial_smem(s, q_head_local_idx);
@@ -252,18 +270,24 @@ template <typename Config, typename Globals> struct attention_reduction {
                 // --- Reduction Pipeline ---
                 for (int i = 0; i < inst.num_partials; ++i) {
                     int stage = i % NUM_STAGES;
-                    kittens::warp::wait(O_partial_arrived(s, q_head_local_idx, stage),
-                               (i / NUM_STAGES) % 2);
+                    // kittens::warp::wait(O_partial_arrived(s, q_head_local_idx, stage),
+                    //            (i / NUM_STAGES) % 2);
+                    int target = (i / NUM_STAGES) + 1;
+                    O_partial_arrived(s, q_head_local_idx, stage).wait(target);
 
                     o_sv &O_smem =
                         get_O_partial_smem(s, q_head_local_idx, stage);
 
                     // Load cur L_partial value
                     int cur_partial_idx = inst.reduction_list[i];
-                    uint32_t src_ptr_L =
-                        static_cast<uint32_t>(__cvta_generic_to_shared(
-                            &L_smem.data[cur_partial_idx]));
-                    move<float>::lds(current_lse, src_ptr_L);
+
+                    // cuda specific to convert address to shared. i think on hip, we can just dereference
+                    // uint32_t src_ptr_L =
+                    //     static_cast<uint32_t>(__cvta_generic_to_shared(
+                    //         &L_smem.data[cur_partial_idx]));
+                    // move<float>::lds(current_lse, src_ptr_L);
+
+                    current_lse = L_smem.data[cur_partial_idx];
                     // Load O_partial_reg
                     kittens::warp::load(current_out, O_smem);
 
@@ -285,17 +309,23 @@ template <typename Config, typename Globals> struct attention_reduction {
                     // Update LSE accumulator:
                     accumulated_lse = max_lse + log2f(new_denom);
 
-                    kittens::warp::arrive(
-                        O_partial_finished(s, q_head_local_idx, stage));
+                    // kittens::warp::arrive(
+                    //     O_partial_finished(s, q_head_local_idx, stage));
+                    O_partial_finished(s, q_head_local_idx, stage).arrive();
                 }
-                kittens::warp::arrive(L_partial_all_finished(s, q_head_local_idx));
+                // kittens::warp::arrive(L_partial_all_finished(s, q_head_local_idx));
+                L_partial_all_finished(s, q_head_local_idx).arrive();
 
                 o_final_sv &O_final_smem =
                     get_O_final_smem(s, q_head_local_idx);
                 kittens::warp::store(O_final_smem, accumulated_out);
-                kittens::warp::sync();
+                // kittens::warp::sync();
 
-                kittens::warp::arrive(final_O_ready(s, q_head_local_idx));
+                // use inbiult amd one
+                __builtin_amdgcn_wave_barrier();
+
+                // kittens::warp::arrive(final_O_ready(s, q_head_local_idx));
+                final_O_ready(s, q_head_local_idx).arrive();
             }
         }
     };
@@ -310,18 +340,25 @@ template <typename Config, typename Globals> struct attention_reduction {
 
                 o_final_sv &O_final_smem =
                     get_O_final_smem(s, q_head_local_idx);
-                kittens::wait(final_O_ready(s, q_head_local_idx), 0);
+                // kittens::wait(final_O_ready(s, q_head_local_idx), 0);
+                final_O_ready(s, q_head_local_idx).wait(1);
                 if (kittens::warp::laneid() == 0) {
                     s.record(megakernel::TEVENT_OUTPUT_READY);
                 }
 
-                kittens::tma::store_async<cache_policy::NORMAL>(
-                    g.attn_out, O_final_smem,
-                    {0, 0, 0, inst.q_head_start_idx + q_head_local_idx});
-                kittens::tma::store_async_wait();
+                // kittens::tma::store_async<cache_policy::NORMAL>(
+                //     g.attn_out, O_final_smem,
+                //     {0, 0, 0, inst.q_head_start_idx + q_head_local_idx});
+                // kittens::tma::store_async_wait();
 
+                kittens::store(
+                    g.attn_out, O_final_smem,
+                    {0, 0, 0, inst.q_head_start_idx + q_head_local_idx}
+                );
                 // atomicAdd(&g.Bar[{inst.layer_idx, opcode - 1,
                 // inst.q_head_start_idx + q_head_local_idx}], 1);
+                __threadfence();
+                __builtin_amdgcn_s_waitcnt(0);
             }
             finish_shared_page(s);
 

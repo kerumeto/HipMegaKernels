@@ -1,6 +1,7 @@
 #pragma once
 
 #include "kittens.cuh"
+#include <hip/hip_runtime.h>
 #include "megakernel.cuh"
 #include <iostream>
 
@@ -94,8 +95,12 @@ struct globals_t {
     using norm_weights_t = kittens::gl<kittens::bf16, 1, 1, -1, hidden_dim, kittens::sv_bf<hidden_dim>,
                               kittens::sv_bf<matvec_block_size>>;
     using rope_table_t = kittens::gl<float, 1, 1, -1, head_dim, kittens::sv_fl<head_dim>>;
-    using kv_cache_t = kittens::gl<kittens::bf16, -1, -1, -1, head_dim, kittens::sv_bf<matvec_block_size>,
-                          kittens::tma::descriptor<kittens::st_bf<kv_block_size, head_dim>, 1>>;
+    // using kv_cache_t = kittens::gl<kittens::bf16, -1, -1, -1, head_dim, kittens::sv_bf<matvec_block_size>,
+    //                       kittens::tma::descriptor<kittens::st_bf<kv_block_size, head_dim>, 1>>;
+
+    // we dont need tma if we are dealing with hip
+    using kv_cache_t = using kv_cache_t = kittens::gl<kittens::bf16, -1, -1, -1, head_dim, 
+                      kittens::sv_bf<matvec_block_size>>;
 
     // max attention partials == sm_count
     using attn_out_intermediates_t =

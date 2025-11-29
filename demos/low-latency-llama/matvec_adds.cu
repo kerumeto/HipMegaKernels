@@ -3,6 +3,8 @@
 #include "llama.cuh"
 #include "utils.cuh"
 #include "matvec_pipeline.cuh"
+#include <hip/hip_runtime.h>
+#include <limits>
 
 using namespace kittens;
 using namespace megakernel;
@@ -42,14 +44,21 @@ struct MatVecAddOp {
         static __device__ inline void
         load_iter(megakernel::state<Config> &s, const globals &g, parsed_instruction &inst,
                   int iter, int col_idx, kittens::st_bf<16, 512> &weight_chunk,
-                  kittens::semaphore &sem) {
-            kittens::tma::load_async<dim::ROW, cache_policy::EVICT_FIRST>(
-                weight_chunk, g.*WeightsPtr,
+                  kittens::hip_semaphore &sem) {
+            // kittens::tma::load_async<dim::ROW, cache_policy::EVICT_FIRST>(
+            //     weight_chunk, g.*WeightsPtr,
+            //     coord<>{inst.layer,
+            //             (inst.start_block_idx + iter) *
+            //                 Globals::matvec_block_size,
+            //             inst.start_reduction_col + 512 * col_idx},
+            //     sem);
+            kittens::load(weight_chunk, g.*WeightsPtr, 
                 coord<>{inst.layer,
-                        (inst.start_block_idx + iter) *
-                            Globals::matvec_block_size,
-                        inst.start_reduction_col + 512 * col_idx},
-                sem);
+                        (inst.start_block_idx + iter) * Globals::matvec_block_size,
+                        inst.start_reduction_col + 512 * col_idx}
+            );
+
+            sem.arrive();
         }
 
         static __device__ inline void store(megakernel::state<Config> &s, const globals &g,

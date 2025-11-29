@@ -18,15 +18,20 @@ template <typename config> struct __align__(128) instruction_state_t {
     int scratch[config::SCRATCH_BYTES / 4];
 };
 
+// probably need to change this for hip
+// this just returns streaming multiprocessor id. 
 __device__ inline unsigned int get_smid() {
     unsigned int ret;
     asm volatile("mov.u32 %0, %smid;" : "=r"(ret));
     return ret;
 }
 
+// amd assembly doesnt return a linear mapping, it returns some complex bitfield but in instruction_fetch.cuh, we need to use it as an index into g_instructions
+// i think we can just return blockIdx.x?
+
 __device__ inline unsigned int get_worker_id() {
-    return get_smid();
-    // return blockIdx.x;
+    // return get_smid();
+    return blockIdx.x;
 }
 
 template <template <typename> typename op_dispatcher, typename... ops>
@@ -35,7 +40,9 @@ struct dispatch_op {
               typename... args>
     __device__ static inline return_t run(int opcode, const globals &g,
                                           args &...a) {
-        asm volatile("trap;\n"); // we want to blow up in this case.
+        // asm volatile("trap;\n"); // we want to blow up in this case.
+        // return return_t{};
+        __builtin_trap();
         return return_t{};
     } // do nothing, base case
 };
