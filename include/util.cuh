@@ -20,10 +20,7 @@ template <typename config> struct __align__(128) instruction_state_t {
 
 
 __device__ inline void invalidate_semaphore(kittens::hip_semaphore& sem) {
-    // No 'if (lane == 0)' check! 
-    // The caller (controller.cuh) already distributes work across lanes.
-    
-    // Reset the counter to 0 so it can be reused for the next instruction
+    // no need to chck lane since we want each thread to reset its own semaphore
     *sem.count = 0; 
     
     // Ensure the write is visible to other blocks/warps
