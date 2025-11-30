@@ -22,7 +22,7 @@ template <typename config, typename globals, typename... ops>
 __device__ void inline page_allocator_loop(const globals &g,
                                            ::megakernel::state<config> &kvms) {
     static_assert(config::INSTRUCTION_PIPELINE_STAGES <= 16,
-                  "This would be an absurd thing to do.");
+                  "This would be an absurd thing to do."); // real
     constexpr uint32_t membermask = 0xFFFFFFFF >> (32 - config::NUM_PAGES);
     int num_iters = g.instructions.rows();
     for (kvms.instruction_index = 0, kvms.instruction_ring = 0;

@@ -13,7 +13,8 @@ struct semaphore_constructor_op_dispatcher {
         __device__ static inline int
         run(const globals &g, ::megakernel::state<config> &kvms) {
             auto out = op::controller::init_semaphores(g, kvms);
-            asm volatile("fence.proxy.async.shared::cta;\n" ::: "memory");
+            // asm volatile("fence.proxy.async.shared::cta;\n" ::: "memory");
+            __threadfence_block();
             return out;
         }
     };

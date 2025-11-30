@@ -18,6 +18,18 @@ template <typename config> struct __align__(128) instruction_state_t {
     int scratch[config::SCRATCH_BYTES / 4];
 };
 
+
+__device__ inline void invalidate_semaphore(kittens::hip_semaphore& sem) {
+    // No 'if (lane == 0)' check! 
+    // The caller (controller.cuh) already distributes work across lanes.
+    
+    // Reset the counter to 0 so it can be reused for the next instruction
+    *sem.count = 0; 
+    
+    // Ensure the write is visible to other blocks/warps
+    __threadfence(); 
+}
+
 // probably need to change this for hip
 // this just returns streaming multiprocessor id. 
 __device__ inline unsigned int get_smid() {

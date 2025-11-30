@@ -42,7 +42,7 @@ __device__ void main_loop(const globals &g, ::megakernel::state<config> &kvms) {
             if (laneid < num_semaphores[kvms.instruction_ring]) {
                 invalidate_semaphore(
                     kvms.all_instructions[kvms.instruction_ring]
-                        .semaphores[laneid]);
+                        .semaphores[laneid]); // where is this function defined?
             }
 
             // TODO needed?
