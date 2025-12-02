@@ -27,7 +27,8 @@ __device__ void inline semaphore_constructor_loop(
                   "Need to be changed.");
     int num_iters = g.instructions.rows();
     int tic = 0;
-    int last_num_semaphores;
+    int last_num_semaphores = 0; 
+
     for (kvms.instruction_index = 0, kvms.instruction_ring = 0;
          kvms.instruction_index < num_iters;
          kvms.instruction_index++,
@@ -36,9 +37,11 @@ __device__ void inline semaphore_constructor_loop(
                  kvms.instruction_ring),
         tic = 1 - tic) {
 
-        kittens::wait(kvms.instruction_arrived[kvms.instruction_ring],
-             (kvms.instruction_index / config::INSTRUCTION_PIPELINE_STAGES) &
-                 1);
+        // AMD: Wait for instruction arrival (produced by page_allocator)
+        // Target: (index / STAGES) + 1
+        int wait_target_arrived = (kvms.instruction_index / config::INSTRUCTION_PIPELINE_STAGES) + 1;
+        kvms.instruction_arrived[kvms.instruction_ring].wait(wait_target_arrived);
+
         int opcode = kvms.instruction()[0];
         int next_num_semaphores;
         if (opcode == 0) {
@@ -51,35 +54,47 @@ __device__ void inline semaphore_constructor_loop(
                                       ::megakernel::state<config>>(
                 opcode, g, kvms);
         }
-        arrive(kvms.semaphores_ready);
+        
+        // AMD: Signal ready
+        kvms.semaphores_ready.arrive();
+
+        // AMD: Logic to wait for the PREVIOUS instruction to finish so we can invalidate its semaphores.
+        // This ensures semaphores are reset to 0 before the ring slot is eventually reused.
         if (kvms.instruction_index > 0) {
             int last_ring = ring_retreat<config::INSTRUCTION_PIPELINE_STAGES>(
                 kvms.instruction_ring);
-            kittens::wait(kvms.instruction_finished[last_ring],
-                 ((kvms.instruction_index - 1) /
-                  config::INSTRUCTION_PIPELINE_STAGES) &
-                     1);
+            
+            // Wait for completion of (index - 1)
+            int wait_target_finished = ((kvms.instruction_index - 1) / config::INSTRUCTION_PIPELINE_STAGES) + 1;
+            kvms.instruction_finished[last_ring].wait(wait_target_finished);
+
             for (int i = 0; i < last_num_semaphores; i++) {
                 invalidate_semaphore(
                     kvms.all_instructions[last_ring].semaphores[i]);
             }
+            // Ensure invalidation is visible
+            __builtin_amdgcn_wave_barrier();
         }
         last_num_semaphores = next_num_semaphores;
     }
-    // if(blockIdx.x == 0) printf("110\n");
+
+    // Cleanup: Invalidate semaphores for the very last instruction after it finishes
     if (num_iters > 0) {
         int last_ring = ring_retreat<config::INSTRUCTION_PIPELINE_STAGES>(
             kvms.instruction_ring);
-        kittens::wait(kvms.instruction_finished[last_ring],
-             ((kvms.instruction_index - 1) /
-              config::INSTRUCTION_PIPELINE_STAGES) &
-                 1);
+        
+        // At loop exit, instruction_index == num_iters. 
+        // We want to wait for (num_iters - 1).
+        int wait_target_finished = ((kvms.instruction_index - 1) / config::INSTRUCTION_PIPELINE_STAGES) + 1;
+        
+        kvms.instruction_finished[last_ring].wait(wait_target_finished);
+        
         for (int i = 0; i < last_num_semaphores; i++) {
             invalidate_semaphore(
                 kvms.all_instructions[last_ring].semaphores[i]);
         }
+        __builtin_amdgcn_wave_barrier();
     }
 }
-
 } // namespace controller
 } // namespace megakernel

@@ -91,7 +91,7 @@ template <typename config> struct state {
         instruction_state_t<config>[config::INSTRUCTION_PIPELINE_STAGES];
     instruction_state_array_t &all_instructions;
     using instruction_semaphore_array_t =
-        kittens::semaphore[config::INSTRUCTION_PIPELINE_STAGES];
+        kittens::hip_semaphore[config::INSTRUCTION_PIPELINE_STAGES];
     instruction_semaphore_array_t &instruction_arrived, &instruction_finished;
     int instruction_index, instruction_ring;
     int reg_pid_order[config::NUM_PAGES];
@@ -127,11 +127,11 @@ template <typename config> struct state {
         kittens::warp::sync();
     }
 
-    __device__ inline kittens::semaphore (
+    __device__ inline kittens::hip_semaphore (
         &semaphores())[config::DYNAMIC_SEMAPHORES] {
         return all_instructions[instruction_ring].semaphores;
     }
-    __device__ inline const kittens::semaphore (
+    __device__ inline const kittens::hip_semaphore (
         &semaphores() const)[config::DYNAMIC_SEMAPHORES] {
         return all_instructions[instruction_ring].semaphores;
     }
@@ -159,7 +159,7 @@ template <typename config> struct state {
     page_array_t &pages;
 
     using page_semaphore_array_t =
-        kittens::semaphore[config::NUM_PAGES]
+        kittens::hip_semaphore[config::NUM_PAGES]
                           [config::INSTRUCTION_PIPELINE_STAGES_BITS];
     page_semaphore_array_t &page_finished;
 
@@ -190,16 +190,17 @@ template <typename config> struct state {
     }
 
 #ifdef KITTENS_BLACKWELL
-    kittens::semaphore &tensor_finished;
-    __device__ inline void wait_tensor_ready() {
-        kittens::wait(tensor_finished, instruction_index % 2);
-    }
+    // kittens::semaphore &tensor_finished;
+    // __device__ inline void wait_tensor_ready() {
+    //     kittens::wait(tensor_finished, instruction_index % 2);
+    // }
 #endif
 
-    kittens::semaphore &semaphores_ready;
-    __device__ inline void wait_semaphores_ready() {
-        kittens::wait(semaphores_ready, instruction_index % 2);
-    }
+    kittens::hip_semaphore &semaphores_ready;
+    // We don't need this for now, we just put it in code
+    // __device__ inline void wait_semaphores_ready() {
+    //     kittens::wait(semaphores_ready, instruction_index % 2);
+    // }
 
     uint64_t start_clock;
 

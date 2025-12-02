@@ -22,7 +22,7 @@ __device__ inline void mk_internal(const globals &g) {
 #endif
     __shared__ alignas(128) instruction_state_t<config>
         instruction_state[config::INSTRUCTION_PIPELINE_STAGES];
-    __shared__ kittens::semaphore
+    __shared__ kittens::hip_semaphore
         page_finished[config::NUM_PAGES]
                      [config::INSTRUCTION_PIPELINE_STAGES_BITS],
         instruction_arrived[config::INSTRUCTION_PIPELINE_STAGES],
