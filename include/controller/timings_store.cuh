@@ -55,13 +55,14 @@ __device__ void inline store_timings_and_reset(int *timings,
 // #endif
     store_timings<config, globals>(timings, instruction_index, g);
     
-    kittens::warp::sync();
+	__builtin_amdgcn_wave_barrier()
 
     int lane = kittens::laneid();
     for (int i = lane; i < config::TIMING_WIDTH; i += kittens::WARP_THREADS) {
         timings[i] = 0;
     }
-    kittens::warp::sync();
+    
+    __builtin_amdgcn_wave_barrier()
 }
 
 } // namespace controller
