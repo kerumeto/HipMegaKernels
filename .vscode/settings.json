@@ -1,5 +1,11 @@
 {
   "files.associations": {
-    "streambuf": "cpp"
+    "streambuf": "cpp",
+    "__bit_reference": "cpp",
+    "fstream": "cpp",
+    "istream": "cpp",
+    "locale": "cpp",
+    "__config_site": "cpp",
+    "ios": "cpp"
   }
 }

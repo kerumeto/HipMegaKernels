@@ -2,6 +2,9 @@
 
 #include "kittens.cuh"
 
+// HIP: Include HIP runtime
+#include <hip/hip_runtime.h>
+
 #include "../util.cuh"
 #include "instruction_fetch.cuh"
 #include "timings_store.cuh"
@@ -34,19 +37,29 @@ __device__ void main_loop(const globals &g, ::megakernel::state<config> &kvms) {
             auto last_slot_instruction_index =
                 kvms.instruction_index - config::INSTRUCTION_PIPELINE_STAGES;
 
-            int phasebit = (last_slot_instruction_index /
-                            config::INSTRUCTION_PIPELINE_STAGES) &
-                           1;
-            kittens::wait(kvms.instruction_finished[kvms.instruction_ring], phasebit);
+            // AMD: Replaced phase-bit logic with monotonic wait target.
+            // Calculate how many times this specific ring slot has been used previously.
+            // +1 because we are waiting for the completion of the previous usage.
+            // -----------------------------------------------------------
+            // IMPORTANT: Make sure that the semaphore counter is maintained
+            // in increasing style. We are not using a phase bit anymore but
+            // rather a monotonic counter.
+            // -----------------------------------------------------------
+            int wait_target = (last_slot_instruction_index / config::INSTRUCTION_PIPELINE_STAGES) + 1;
+            
+            kvms.instruction_finished[kvms.instruction_ring].wait(wait_target);
 
+            // AMD: We enable this now. Resetting internal semaphores to 0 is safe/required
+            // even if the outer loop uses monotonic counters, because the internal 
+            // ops (matmul, etc) likely expect semaphores to start at 0.
             if (laneid < num_semaphores[kvms.instruction_ring]) {
                 invalidate_semaphore(
                     kvms.all_instructions[kvms.instruction_ring]
-                        .semaphores[laneid]); // where is this function defined?
+                        .semaphores[laneid]); 
             }
 
-            // TODO needed?
-            kittens::warp::sync();
+            // AMD: Wave barrier to ensure visibility of resets before reuse
+            __builtin_amdgcn_wave_barrier();
 
             if (laneid == 0) {
                 if constexpr (config::TIMING_RECORD_ENABLED) {
@@ -116,6 +129,7 @@ __device__ void main_loop(const globals &g, ::megakernel::state<config> &kvms) {
                                                                        g, kvms);
             }
 
+            // HIP supports __shfl_sync, mask is usually -1 or 0xffffffff
             auto shfl_val = __shfl_sync(
                 0xffffffff, num_semaphores[kvms.instruction_ring], 0);
 
@@ -127,15 +141,16 @@ __device__ void main_loop(const globals &g, ::megakernel::state<config> &kvms) {
             kvms.record(TEVENT_SEMS_SETUP);
             // Step 4. Let the rest of the world know that next instruction is
             // ready to roll!
-            arrive(kvms.instruction_arrived[kvms.instruction_ring], 1);
+            
+            // AMD: Call .arrive() on the custom semaphore struct
+            kvms.instruction_arrived[kvms.instruction_ring].arrive();
         }
     }
 
     // invalidate remaining semaphores and write out remaining timings
-    // Remember that our pipline is config::INSTRUCTION_PIPELINE_STAGES (2) deep
-    // When the above loop ended, it finished preparng the last 2 instructions,
-    // but they have not yet been waited on or had their semaphores invalidated.
-    // That is what this loop is for.
+    // Remember that our pipeline is config::INSTRUCTION_PIPELINE_STAGES (2) deep
+    // When the above loop ended, it finished preparing the last 2 instructions,
+    // but they have not yet been waited on.
     for (int i = 0; i < config::INSTRUCTION_PIPELINE_STAGES; i++) {
         auto instruction_index =
             num_iters - config::INSTRUCTION_PIPELINE_STAGES + i;
@@ -146,9 +161,9 @@ __device__ void main_loop(const globals &g, ::megakernel::state<config> &kvms) {
         auto instruction_ring =
             instruction_index % config::INSTRUCTION_PIPELINE_STAGES;
 
-        auto phasebit =
-            (instruction_index / config::INSTRUCTION_PIPELINE_STAGES) & 1;
-        kittens::wait(kvms.instruction_finished[instruction_ring], phasebit);
+        // AMD: Monotonic wait calculation for cleanup loop
+        int wait_target = (instruction_index / config::INSTRUCTION_PIPELINE_STAGES) + 1;
+        kvms.instruction_finished[instruction_ring].wait(wait_target);
 
         if (laneid < num_semaphores[instruction_ring]) {
             invalidate_semaphore(
