@@ -167,7 +167,8 @@ template <typename Config, typename Globals> struct attention_reduction {
                 s.wait_page_ready(s.pid(laneid));
                 s.finish_page(s.pid(laneid), Config::NUM_CONSUMER_WARPS);
             }
-            kittens::warp::sync(); // Have to make sure lane 0 finished waiting
+            // kittens::warp::sync(); // Have to make sure lane 0 finished waiting
+            __builtin_amdgcn_wave_barrier();
         }
     };
 
@@ -362,7 +363,8 @@ template <typename Config, typename Globals> struct attention_reduction {
             }
             finish_shared_page(s);
 
-            kittens::warp::sync();
+            // kittens::warp::sync();
+            __builtin_amdgcn_wave_barrier();
             if (kittens::warp::laneid() == 0) {
                 s.record(megakernel::TEVENT_AT_GMEM_STORE);
                 // asm volatile("fence.acq_rel.gpu;");

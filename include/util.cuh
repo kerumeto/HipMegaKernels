@@ -124,7 +124,8 @@ template <typename config> struct state {
         constexpr auto num_floats = num_bytes / 4;
         auto &scratch_vec = *reinterpret_cast<kittens::sv_fl<num_floats> *>(scratch());
         kittens::warp::zero(scratch_vec);
-        kittens::warp::sync();
+        // kittens::warp::sync();
+         __builtin_amdgcn_wave_barrier();
     }
 
     __device__ inline kittens::hip_semaphore (

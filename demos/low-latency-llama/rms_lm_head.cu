@@ -67,9 +67,11 @@ template <typename Config, typename Globals> struct rms_lm_head {
                           pipeline::SCRATCH_BYTES_PER_WARP>(
                 output_scratch_start, logits_rv);
 
-            kittens::warp::sync();
+            // kittens::warp::sync();
+             __builtin_amdgcn_wave_barrier();
             kittens::warp::store(logits_smem_bf, logits_rv);
-            kittens::warp::sync();
+            // kittens::warp::sync();
+             __builtin_amdgcn_wave_barrier();
 
             if (kittens::warp::laneid() == 0) {
                 s.record(megakernel::TEVENT_OUTPUT_READY);
@@ -84,7 +86,8 @@ template <typename Config, typename Globals> struct rms_lm_head {
                 __builtin_amdgcn_s_waitcnt(0);
             }
 
-            kittens::warp::sync();
+            // kittens::warp::sync();
+             __builtin_amdgcn_wave_barrier();
         }
     };
 

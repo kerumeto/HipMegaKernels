@@ -101,7 +101,8 @@ __device__ static inline void matvec(kittens::sv_fl<st_t::rows> &out_smem,
     if (kittens::laneid() < 16) {
         out_smem[kittens::laneid()] = sum_vec[0][0];
     }
-    kittens::warp::sync();
+    // kittens::warp::sync();
+     __builtin_amdgcn_wave_barrier();
 }
 #else
 template <kittens::ducks::st::all st_t>
@@ -130,7 +131,8 @@ __device__ static inline void matvec(kittens::sv_fl<st_t::rows> &out_smem,
     if (kittens::laneid() < 16) {
         out_smem[kittens::laneid()] = sum_vec[0][0];
     }
-    kittens::warp::sync();
+    // kittens::warp::sync();
+     __builtin_amdgcn_wave_barrier();
 }
 #endif
 

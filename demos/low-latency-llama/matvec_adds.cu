@@ -78,9 +78,11 @@ struct MatVecAddOp {
                           pipeline::SCRATCH_BYTES_PER_WARP>(
                 output_scratch_start, output_rv);
 
-            kittens::warp::sync();
+            // kittens::warp::sync();
+            __builtin_amdgcn_wave_barrier();
             kittens::warp::store(output_smem_bf, output_rv);
-            kittens::warp::sync();
+            // kittens::warp::sync();
+            __builtin_amdgcn_wave_barrier();
 
             if (kittens::warp::laneid() == 0) {
                 // auto &OutputActivations =
@@ -91,7 +93,8 @@ struct MatVecAddOp {
                 manual_hip_store_add(g.*OutputActivationsPtr, output_smem_bf, coord<>{block_idx});
             }
 
-            kittens::warp::sync();
+            // kittens::warp::sync();
+            
         }
     };
     using pipeline = matvec_pipeline<Config, Globals, parsed_instruction,
@@ -157,11 +160,12 @@ struct MatVecAddOp {
             kittens::warp::load(activations_smem, g.*InputActivationsPtr,
                        coord<>{inst.start_reduction_col +
                                kittens::warpid() * pipeline::REDUCTION_DIM_PER_WARP});
-            kittens::warp::sync();
-
+            // kittens::warp::sync();
+             __builtin_amdgcn_wave_barrier();
             rv_t activations_vec;
             kittens::warp::load(activations_vec, activations_smem);
-            kittens::warp::sync();
+            // kittens::warp::sync();
+             __builtin_amdgcn_wave_barrier();
 
             s.warp_finish_page(pipeline::get_activation_page(s), 1);
 
@@ -172,7 +176,8 @@ struct MatVecAddOp {
         // Uses 4 full pages for outputs.
         static __device__ void run(const globals &g, megakernel::state<Config> &s) {
             pipeline::storer_loop(s, g);
-            kittens::warp::sync();
+            // kittens::warp::sync();
+             __builtin_amdgcn_wave_barrier();
 
             if (kittens::laneid() == 0) {
                 s.record(megakernel::TEVENT_AT_GMEM_STORE);

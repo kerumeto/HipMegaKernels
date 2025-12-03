@@ -105,12 +105,14 @@ template <typename Config, typename Globals> struct rms_upgate_silu {
             kittens::warp::mul(gate_out, up_out, gate_out);
 
             // wait before we overwrite gate_out
-            kittens::warp::sync();
+            // kittens::warp::sync();
+             __builtin_amdgcn_wave_barrier();
 
             kittens::warp::store(out_smem, gate_out);
 
             // wait before we store results to global memory
-            kittens::warp::sync();
+            // kittens::warp::sync();
+             __builtin_amdgcn_wave_barrier();
 
             if (kittens::laneid() == 0) {
                 // kittens::tma::store_async<cache_policy::EVICT_LAST>(g.silu_out, out_smem,
@@ -134,7 +136,8 @@ template <typename Config, typename Globals> struct rms_upgate_silu {
                 s.record(megakernel::TEVENT_DONE_GMEM_STORE);
             }
 
-            kittens::warp::sync();
+            // kittens::warp::sync();
+             __builtin_amdgcn_wave_barrier();
         }
     };
 

@@ -118,7 +118,8 @@ template <typename Config, typename Globals> struct rms_qkv_rope_append {
 
                 // Fetch the neighbor values
                 int mod = (kittens::laneid() & 0b1) ? -1 : 1; // 1 for even, -1 for odd
-                kittens::warp::sync();
+                // kittens::warp::sync();
+                 __builtin_amdgcn_wave_barrier();
                 float pair_val =
                     __shfl_sync(MASK_ALL, qkv_proj[0][0], kittens::laneid() + mod);
 
@@ -131,9 +132,11 @@ template <typename Config, typename Globals> struct rms_qkv_rope_append {
                 }
             }
 
-            kittens::warp::sync();
+            // kittens::warp::sync();
+             __builtin_amdgcn_wave_barrier();
             kittens::warp::store(qkv_proj_smem_bf, qkv_proj);
-            kittens::warp::sync();
+            // kittens::warp::sync();
+             __builtin_amdgcn_wave_barrier();
 
             if (kittens::laneid() == 0) {
 
@@ -181,7 +184,8 @@ template <typename Config, typename Globals> struct rms_qkv_rope_append {
                 s.record(megakernel::TEVENT_DONE_GMEM_STORE);
             }
 
-            kittens::warp::sync();
+            // kittens::warp::sync();
+             __builtin_amdgcn_wave_barrier();
         }
     };
 
