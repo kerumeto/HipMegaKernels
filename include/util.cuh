@@ -143,7 +143,8 @@ template <typename config> struct state {
             static_cast<uint32_t>(__cvta_generic_to_shared(&(pid_order()[0])));
     }
     __device__ inline void next_instruction() {
-        __syncwarp();
+        // __syncwarp();
+        __builtin_amdgcn_wave_barrier();
         if (kittens::laneid() == 0) {
 #ifdef MK_DEBUG
             printf("Thread %d: arriving at instruction finished %d\n",
@@ -315,7 +316,8 @@ constexpr int TEVENT_TRIPLES_OUTPUT_READY = 125;
                 }                                                              \
             }                                                                  \
         }                                                                      \
-        __syncwarp();                                                          \
+        // __syncwarp();  
+        __builtin_amdgcn_wave_barrier();                                                        \
         MK_DEBUG_PRINT_END(#name);                                             \
     }                                                                          \
     }                                                                          \

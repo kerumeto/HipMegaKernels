@@ -35,11 +35,11 @@ template <typename config> struct NoOp {
         // launcher does nothing here, since this doesn't use tensor cores.
         template <typename globals>
         static __device__ void run(const globals &g, state<config> &s) {
-#ifdef KITTENS_BLACKWELL
-            s.wait_tensor_ready();
-            if (kittens::laneid() == 0)
-                arrive(s.tensor_finished, config::NUM_CONSUMER_WARPS);
-#endif
+// #ifdef KITTENS_BLACKWELL
+//             s.wait_tensor_ready();
+//             if (kittens::laneid() == 0)
+//                 arrive(s.tensor_finished, config::NUM_CONSUMER_WARPS);
+// #endif
         }
     };
     struct consumer {
