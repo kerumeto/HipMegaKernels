@@ -193,7 +193,7 @@ struct matvec_pipeline {
             // kittens::wait(outputs_finished(s, output_stage),
             //      (i % (2 * OUTPUT_PIPELINE_STAGES)) < OUTPUT_PIPELINE_STAGES);
 
-            int weight_target = (i / INPUT_PIPELINE_STAGES)+1; // wait for producer to post something in enxt buffer slot
+            int weight_wait_target = (i / INPUT_PIPELINE_STAGES)+1; // wait for producer to post something in enxt buffer slot
             weights_arrived(s, input_stage).wait(weight_wait_target);
 
             if (i >= OUTPUT_PIPELINE_STAGES) {

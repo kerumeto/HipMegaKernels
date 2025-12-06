@@ -65,23 +65,23 @@ template <typename Config, typename Globals> struct attention_reduction {
     }
 
     __device__ static inline kittens::hip_semaphore &
-    O_partial_arrived(megakernel::state<config> &s, int q_head_local_idx, int stage) {
+    O_partial_arrived(megakernel::state<Config> &s, int q_head_local_idx, int stage) {
         return s
             .semaphores()[O_partial_sem_idx(q_head_local_idx, stage, false)];
     }
     __device__ static inline kittens::hip_semaphore &
-    O_partial_finished(megakernel::state<config> &s, int q_head_local_idx, int stage) {
+    O_partial_finished(megakernel::state<Config> &s, int q_head_local_idx, int stage) {
         return s.semaphores()[O_partial_sem_idx(q_head_local_idx, stage, true)];
     }
     __device__ static inline kittens::hip_semaphore &
-    L_partial_all_arrived(megakernel::state<config> &s, int q_head_local_idx) {
+    L_partial_all_arrived(megakernel::state<Config> &s, int q_head_local_idx) {
         return s.semaphores()[L_partial_sem_idx(q_head_local_idx, false)];
     }
     __device__ static inline kittens::hip_semaphore &
-    L_partial_all_finished(megakernel::state<config> &s, int q_head_local_idx) {
+    L_partial_all_finished(megakernel::state<Config> &s, int q_head_local_idx) {
         return s.semaphores()[L_partial_sem_idx(q_head_local_idx, true)];
     }
-    __device__ static inline kittens::hip_semaphore &final_O_ready(megakernel::state<config> &s,
+    __device__ static inline kittens::hip_semaphore &final_O_ready(megakernel::state<Config> &s,
                                                       int q_head_local_idx) {
         return s.semaphores()[Final_O_ready_sem_idx(q_head_local_idx)];
     }
@@ -107,18 +107,18 @@ template <typename Config, typename Globals> struct attention_reduction {
         sizeof(l_partial_sv) + NUM_STAGES * sizeof(o_sv) + sizeof(o_final_sv);
     static constexpr size_t total_smem_needed =
         Q_HEADS_PER_INSTRUCTION * size_per_head;
-    static_assert(total_smem_needed <= config::PAGE_SIZE,
-                  "Required shared memory exceeds configured page size.");
+    static_assert(total_smem_needed <= Config::PAGE_SIZE,
+                  "Required shared memory exceeds Configured page size.");
 
     __device__ static inline l_partial_sv &
-    get_L_partial_smem(megakernel::state<config> &s, int q_head_local_idx) {
+    get_L_partial_smem(megakernel::state<Config> &s, int q_head_local_idx) {
         int pid = s.pid(SHARED_DATA_PAGE);
         char *page_base_ptr = reinterpret_cast<char *>(s.pages[pid].data);
         char *head_base_ptr = page_base_ptr + q_head_local_idx * size_per_head;
         return *reinterpret_cast<l_partial_sv *>(head_base_ptr);
     }
     __device__ static inline o_sv &
-    get_O_partial_smem(megakernel::state<config> &s, int q_head_local_idx, int stage) {
+    get_O_partial_smem(megakernel::state<Config> &s, int q_head_local_idx, int stage) {
         int pid = s.pid(SHARED_DATA_PAGE);
         char *page_base_ptr = reinterpret_cast<char *>(s.pages[pid].data);
         char *head_base_ptr = page_base_ptr + q_head_local_idx * size_per_head;
@@ -126,7 +126,7 @@ template <typename Config, typename Globals> struct attention_reduction {
         return *reinterpret_cast<o_sv *>(head_base_ptr + offset);
     }
     __device__ static inline o_final_sv &
-    get_O_final_smem(megakernel::state<config> &s, int q_head_local_idx) {
+    get_O_final_smem(megakernel::state<Config> &s, int q_head_local_idx) {
         int pid = s.pid(SHARED_DATA_PAGE);
         char *page_base_ptr = reinterpret_cast<char *>(s.pages[pid].data);
         char *head_base_ptr = page_base_ptr + q_head_local_idx * size_per_head;

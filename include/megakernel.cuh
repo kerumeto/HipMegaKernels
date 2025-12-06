@@ -101,7 +101,8 @@ __device__ inline void mk_internal(const globals &g) {
         init_semaphore(semaphores_ready, 1);
     }
 
-    asm volatile("fence.proxy.async.shared::cta;\n" ::: "memory");
+    // dont neeed this for md
+    // asm volatile("fence.proxy.async.shared::cta;\n" ::: "memory");
     __syncthreads();
 
     if (config::CLUSTER_BLOCKS == 1)
@@ -135,7 +136,8 @@ __device__ inline void mk_internal(const globals &g) {
                                                                          mks);
             break;
         default:
-            asm volatile("trap;");
+            // asm volatile("trap;");
+            __builtin_trap();
         }
     }
 

@@ -99,7 +99,7 @@ struct globals_t {
     //                       kittens::tma::descriptor<kittens::st_bf<kv_block_size, head_dim>, 1>>;
 
     // we dont need tma if we are dealing with hip
-    using kv_cache_t = using kv_cache_t = kittens::gl<kittens::bf16, -1, -1, -1, head_dim, 
+    using kv_cache_t = kittens::gl<kittens::bf16, -1, -1, -1, head_dim, 
                       kittens::sv_bf<matvec_block_size>>;
 
     // max attention partials == sm_count
@@ -158,11 +158,12 @@ typedef globals_t<LLAMA_1B_NUM_LAYERS, LLAMA_1B_HIDDEN_DIM,
                   LLAMA_1B_INTERMEDIATE_DIM, LLAMA_1B_HEAD_DIM,
                   LLAMA_1B_NUM_ATTENTION_HEADS, LLAMA_1B_NUM_KV_HEADS,
                   LLAMA_1B_KV_BLOCK_SIZE, LLAMA_1B_MATVEC_BLOCK_SIZE,
-#ifndef KITTENS_BLACKWELL
-                  H100_SM_COUNT>
+#ifdef KITTENS_MI300X        
+    MI300X_SM_COUNT>         
+#elif defined(KITTENS_BLACKWELL)
+    B200_SM_COUNT>
 #else
-// This is specific to the MI300X GPU
-                  MI300X_SM_COUNT>
+    H100_SM_COUNT>           
 #endif
     llama_1b_globals;
 
