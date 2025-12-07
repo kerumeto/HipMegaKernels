@@ -3,6 +3,54 @@
 #include "kittens.cuh"
 #include "config.cuh"
 
+namespace kittens {
+    // Simple semaphore wrapper for HIP
+    struct hip_semaphore {
+        volatile int* count; // shared memory location
+    };
+
+    // Initialize/Reset semaphore
+    __device__ inline void init_semaphore(hip_semaphore& sem, int val) {
+        if (threadIdx.x == 0) {
+            *sem.count = val;
+        }
+        __syncthreads();
+    }
+
+    // Wait until semaphore reaches value
+    __device__ inline void wait(hip_semaphore& sem, int val) {
+        while (*sem.count < val) {
+            __builtin_amdgcn_s_sleep(1); // Sleep for 64 cycles (optimized)
+        }
+        __threadfence_block(); // Ensure visibility
+    }
+
+    // Signal arrival
+    __device__ inline void arrive(hip_semaphore& sem, int val = 1) {
+        // Ensure all previous memory operations are complete before signaling
+        __builtin_amdgcn_s_waitcnt(0); 
+        __threadfence_block();
+
+        atomicAdd((int*)sem.count, val);
+    }
+
+    // Warp namespace aliases/utilities
+    namespace warp {
+        __device__ __forceinline__ int laneid() {
+            return ::kittens::laneid();
+        }
+
+        // Zero out a variable (simple byte-wise zeroing)
+        template<typename T>
+        __device__ inline void zero(T& x) {
+            #pragma unroll
+            for(int i = 0; i < sizeof(T)/sizeof(int); i++) {
+                ((int*)&x)[i] = 0;
+            }
+        }
+    }
+}
+
 namespace megakernel {
 
 // pid -- physical page id
@@ -195,7 +243,7 @@ template <typename config> struct state {
     // kittens::semaphore &tensor_finished;
     // __device__ inline void wait_tensor_ready() {
     //     kittens::wait(tensor_finished, instruction_index % 2);
-    // }
+    // }g
 #endif
 
     kittens::hip_semaphore &semaphores_ready;

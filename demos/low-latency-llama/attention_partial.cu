@@ -10,38 +10,6 @@
 using namespace kittens;
 using namespace megakernel;
 
-namespace kittens {
-    struct hip_semaphore {
-        volatile int* count; // shared memory location
-
-        // initialzie sempahore to passed in vale should be 0 usualy
-        __device__ inline void init(int val) {
-            if (threadIdx.x == 0) {
-                *count = val;
-            }
-            __syncthreads();
-        }
-
-        __device__ inline void arrive() {
-            __builtin_amdgcn_s_waitcnt(0);
-
-            __threadfence_block();
-
-            if (threadIdx.x % 32 == 0) {
-                atomicAdd((int*)count, 1);
-            }
-         }
-
-         __device__ inline void wait(int target_val) {
-            while (*(volatile int*)count < target_val) {
-                __builtin_amdgcn_s_sleep(1); // sleep for 64 clock cycles
-            }
-             __threadfence_block();
-         }
-
-
-    }
-}
 template <typename config, typename globals> struct attention_partial {
     static constexpr int opcode = OPCODE_PartialAttention;
     static constexpr int NUM_STAGES = 3;
