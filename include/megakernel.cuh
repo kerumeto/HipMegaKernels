@@ -136,10 +136,12 @@ __device__ inline void mk_internal(const globals &g) {
 #endif
 
     if (kittens::warpid() < config::NUM_CONSUMER_WARPS) {
-        kittens::warpgroup::increase_registers<config::CONSUMER_REGISTERS>();
+        // Not supported in AMD, register usage is cannot be dynamically changed
+	    //kittens::warpgroup::increase_registers<config::CONSUMER_REGISTERS>();
         ::megakernel::consumer::main_loop<config, globals, ops...>(g, mks);
     } else {
-        kittens::warpgroup::decrease_registers<config::NON_CONSUMER_REGISTERS>();
+        // Not supported in AMD, register usage is cannot be dynamically changed
+        // kittens::warpgroup::decrease_registers<config::NON_CONSUMER_REGISTERS>();
         switch (kittens::warpgroup::warpid()) {
         case 0:
             ::megakernel::loader::main_loop<config, globals, ops...>(g, mks);
@@ -191,8 +193,10 @@ struct megakernel_wrapper {
 
 template <typename config, typename globals, typename... ops>
 __launch_bounds__(config::NUM_THREADS, 1)
-    __cluster_dims__(config::CLUSTER_BLOCKS) __global__
-    void mk(const __grid_constant__ globals g) {
+  //  __cluster_dims__(config::CLUSTER_BLOCKS) __global__
+  // no such thing as grid_constant in amd
+       	__global__
+       	void mk(const globals g) {
     megakernel_wrapper<config, globals, ops...>::run(g);
 }
 
