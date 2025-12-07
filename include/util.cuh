@@ -29,11 +29,11 @@ __device__ inline void invalidate_semaphore(kittens::hip_semaphore& sem) {
 
 // probably need to change this for hip
 // this just returns streaming multiprocessor id. 
-__device__ inline unsigned int get_smid() {
-    unsigned int ret;
+// __device__ inline unsigned int get_smid() {
+    // unsigned int ret;
     //asm volatile("mov.u32 %0, %smid;" : "=r"(ret));
-    return ret;
-}
+    // return ret;
+// }
 
 // amd assembly doesnt return a linear mapping, it returns some complex bitfield but in instruction_fetch.cuh, we need to use it as an index into g_instructions
 // i think we can just return blockIdx.x?

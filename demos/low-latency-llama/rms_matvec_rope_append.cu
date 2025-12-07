@@ -110,9 +110,9 @@ template <typename Config, typename Globals> struct rms_qkv_rope_append {
             kittens::warp::load(rope_sin, rope_sin_sv);
 
             /**
-             * IMPORTANT: CHECK THIS. I dont know if this mask suff will work on amd / have to loop at hipkittens for this since lanid() is not same for Mi300x and that might mess 
+             * IMPORTANT: CHECK THIS. I dont know if this mask suff will work on amd / have to loop at hipkittens for this since laneid() is not same for Mi300x and that might mess 
              * with mod
-             * __shfl_sync is NVIDIA intrinsic. HipKittens should maps this to __shfl. cjeck if this maping exists or else  use __shfl directly
+             * __shfl_sync is NVIDIA intrinsic. HipKittens should maps this to __shfl. check if this maping exists or else  use __shfl directly
              */
             if (block_idx < V_BLK_START) { // only Q & K need RoPE
 
@@ -121,6 +121,7 @@ template <typename Config, typename Globals> struct rms_qkv_rope_append {
                 // kittens::warp::sync();
                  __builtin_amdgcn_wave_barrier();
                 float pair_val =
+                    // MASK_ALL defined at HipKittens/include/common/util.cuh
                     __shfl_sync(MASK_ALL, qkv_proj[0][0], kittens::laneid() + mod);
 
                 // Compute RoPE in-place
