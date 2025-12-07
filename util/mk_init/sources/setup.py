@@ -7,14 +7,13 @@ from setuptools import setup, Extension
 # Environment variables
 THUNDERKITTENS_ROOT = os.environ.get('THUNDERKITTENS_ROOT', '')
 MEGAKERNELS_ROOT = os.environ.get('MEGAKERNELS_ROOT', '')
-# Default to Python 3.10 or get from environment, standardizing on what is available in the shell
 PYTHON_VERSION = os.environ.get('PYTHON_VERSION', '3.10') 
 ROCM_HOME = os.environ.get('ROCM_HOME', '/opt/rocm')
 
-# Target GPU (default to MI300X/gfx942 for HipMegaKernels)
+# Target GPU (default to MI300X/gfx942)
 TARGET = os.environ.get('TARGET_GPU', 'MI300X') 
 
-# Source file (hipcc compiles .cu files as HIP C++)
+# Source file
 SRC = 'src/{{PROJECT_NAME_LOWER}}.cu'
 
 # Get Python include directory
@@ -25,20 +24,23 @@ def get_python_include():
     except ImportError:
         return ''
 
-# Base HIPCC flags (Replaces NVCC flags)
+# Base HIPCC flags
+# FIX: Removed -Xcompiler wrapper. Passed flags directly.
 hipcc_flags = [
     '-DNDEBUG',
     '-O3',
-    '-std=c++20',           # HIP supports C++20
+    '-std=c++20',
     '-fPIC',
-    '-w',                   # Suppress warnings
+    '-w',
     '-D__HIP_PLATFORM_AMD__',
     '--use_fast_math',
+    '-Wno-psabi',            # FIXED: Passed directly
+    '-fno-strict-aliasing',  # FIXED: Passed directly
     '-lrt',
     '-lpthread',
     '-ldl',
-    '-lhipblas',            # Link HIP BLAS
-    '-lrocblas',            # Link ROC BLAS
+    '-lhipblas',
+    '-lrocblas',
     '-shared',
     f'-lpython{PYTHON_VERSION}'
 ]
@@ -64,26 +66,18 @@ def get_python_config_flags():
 hipcc_flags.extend(get_python_config_flags())
 
 # Conditional setup based on target GPU
-# Maps simplified names to AMD GFX architectures
 if TARGET in ['MI300', 'MI300X', 'gfx942']:
-    hipcc_flags.extend(['--offload-arch=gfx942'])
-elif TARGET in ['MI250', 'MI250X', 'gfx90a']:
-    hipcc_flags.extend(['--offload-arch=gfx90a'])
+    hipcc_flags.extend(['--offload-arch=gfx942', '-DKITTENS_MI300X'])
+elif TARGET in ['MI200', 'MI250', 'MI250X', 'gfx90a']:
+    # Note: Use MI250 or MI200 to trigger proper macros from Makefile logic
+    hipcc_flags.extend(['--offload-arch=gfx90a', '-DKITTENS_MI250']) 
 elif TARGET == 'native':
     hipcc_flags.extend(['--offload-arch=native'])
 else:
-    # Fallback: assume the user provided a valid raw gfx arch (e.g. gfx90a)
-    hipcc_flags.extend([f'--offload-arch={TARGET}'])
+    # Default fallback
+    hipcc_flags.extend(['--offload-arch=gfx942', '-DKITTENS_MI300X'])
 
-# Get python extension suffix
-def get_extension_suffix():
-    try:
-        suffix = subprocess.check_output(['python3-config', '--extension-suffix']).decode().strip()
-        return suffix
-    except subprocess.CalledProcessError:
-        return '.so'
-
-# Custom build extension class to use hipcc instead of nvcc
+# Custom build extension class to use hipcc
 class HipExtension(Extension):
     def __init__(self, name, sources, **kwargs):
         super().__init__(name, sources, **kwargs)
@@ -101,8 +95,6 @@ class HipBuildExt(build_ext):
         
         # Get the output file path
         ext_path = self.get_ext_fullpath(ext.name)
-        
-        # Ensure the directory exists
         os.makedirs(os.path.dirname(ext_path), exist_ok=True)
         
         # Build the command
@@ -113,8 +105,6 @@ class HipBuildExt(build_ext):
             cmd.extend(['-I', include_dir])
         
         print(f"Building HIP extension with command: {' '.join(cmd)}")
-        
-        # Execute the command
         subprocess.check_call(cmd)
 
 # Define the extension

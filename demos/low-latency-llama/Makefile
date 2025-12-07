@@ -19,11 +19,10 @@ endif
 COMMON_FLAGS=-DNDEBUG -O3 -std=c++20 -fPIC
 
 # Host compiler specific flags
-# Removed -fPIE (only for executables) and strict-aliasing (safer for type-punning)
-HOST_FLAGS=-Xcompiler=-Wno-psabi -Xcompiler=-fno-strict-aliasing
+# FIX: Removed -Xcompiler wrapper. Passed flags directly for hipcc/clang.
+HOST_FLAGS=-Wno-psabi -fno-strict-aliasing
 
 # Linker flags
-# Removed explicit -lpython linkage (best practice for Linux extensions)
 LINK_FLAGS=-lrt -lpthread -ldl -lhipsparse
 
 # Base HIPCC flags
@@ -37,14 +36,14 @@ HIPCCFLAGS+= -I${THUNDERKITTENS_ROOT}/include -I${MEGAKERNELS_ROOT}/include $(sh
 # gfx90a = MI210, MI250, MI250X
 # gfx942 = MI300A, MI300X
 ifeq ($(GPU),MI200)
-    HIPCCFLAGS+= --offload-arch=gfx90a -DKITTENS_MI200
+	HIPCCFLAGS+= --offload-arch=gfx90a -DKITTENS_MI200
 else ifeq ($(GPU),MI250)
-    HIPCCFLAGS+= --offload-arch=gfx90a -DKITTENS_MI250
+	HIPCCFLAGS+= --offload-arch=gfx90a -DKITTENS_MI250
 else ifeq ($(GPU),MI300X)
-    HIPCCFLAGS+= --offload-arch=gfx942 -DKITTENS_MI300X
+	HIPCCFLAGS+= --offload-arch=gfx942 -DKITTENS_MI300X
 else
-    # Default fallback
-    HIPCCFLAGS+= --offload-arch=gfx942 -DKITTENS_MI300X
+	# Default fallback
+	HIPCCFLAGS+= --offload-arch=gfx942 -DKITTENS_MI300X
 endif
 
 # Default target
