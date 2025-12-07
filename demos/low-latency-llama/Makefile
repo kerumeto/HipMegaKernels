@@ -30,7 +30,7 @@ HIPCCFLAGS=$(COMMON_FLAGS) $(HOST_FLAGS) $(LINK_FLAGS) -shared
 
 # Include paths
 # Using --includes ensures we get Python headers without manually guessing paths
-HIPCCFLAGS+= -I${THUNDERKITTENS_ROOT}/include -I${MEGAKERNELS_ROOT}/include $(shell python3 -m pybind11 --includes)
+HIPCCFLAGS+= -I${THUNDERKITTENS_ROOT}/include -I${MEGAKERNELS_ROOT}/include -I/opt/rocm/include -I/opt/rocm/include/hip $(shell python3 -m pybind11 --includes)
 
 # Architecture Setup
 # gfx90a = MI210, MI250, MI250X
