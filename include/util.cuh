@@ -316,7 +316,7 @@ constexpr int TEVENT_TRIPLES_OUTPUT_READY = 125;
                 }                                                              \
             }                                                                  \
         }                                                                      \
-        // __syncwarp();  
+        // __syncwarp();  \ 
         __builtin_amdgcn_wave_barrier();                                                        \
         MK_DEBUG_PRINT_END(#name);                                             \
     }                                                                          \
