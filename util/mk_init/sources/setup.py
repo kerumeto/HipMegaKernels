@@ -7,48 +7,39 @@ from setuptools import setup, Extension
 # Environment variables
 THUNDERKITTENS_ROOT = os.environ.get('THUNDERKITTENS_ROOT', '')
 MEGAKERNELS_ROOT = os.environ.get('MEGAKERNELS_ROOT', '')
-PYTHON_VERSION = os.environ.get('PYTHON_VERSION', '3.13')
+# Default to Python 3.10 or get from environment, standardizing on what is available in the shell
+PYTHON_VERSION = os.environ.get('PYTHON_VERSION', '3.10') 
+ROCM_HOME = os.environ.get('ROCM_HOME', '/opt/rocm')
 
-# Target GPU (default to HOPPER)
-TARGET = os.environ.get('TARGET_GPU', 'HOPPER') # or BLACKWELL
+# Target GPU (default to MI300X/gfx942 for HipMegaKernels)
+TARGET = os.environ.get('TARGET_GPU', 'MI300X') 
 
-# Source file
+# Source file (hipcc compiles .cu files as HIP C++)
 SRC = 'src/{{PROJECT_NAME_LOWER}}.cu'
 
 # Get Python include directory
 def get_python_include():
     try:
-        python_include = subprocess.check_output(['python', '-c', "import sysconfig; print(sysconfig.get_path('include'))"]).decode().strip()
-        return python_include
-    except subprocess.CalledProcessError:
+        import sysconfig
+        return sysconfig.get_path('include')
+    except ImportError:
         return ''
 
-# Base NVCC flags
-nvcc_flags = [
+# Base HIPCC flags (Replaces NVCC flags)
+hipcc_flags = [
     '-DNDEBUG',
-    '-Xcompiler=-fPIE',
-    '--expt-extended-lambda',
-    '--expt-relaxed-constexpr',
-    '-Xcompiler=-Wno-psabi',
-    '-Xcompiler=-fno-strict-aliasing',
-    '--use_fast_math',
-    '-forward-unknown-to-host-compiler',
     '-O3',
-    '-Xnvlink=--verbose',
-    '-Xptxas=--verbose',
-    '-Xptxas=--warn-on-spills',
-    '-std=c++20',
-    '-x', 'cu',
+    '-std=c++20',           # HIP supports C++20
+    '-fPIC',
+    '-w',                   # Suppress warnings
+    '-D__HIP_PLATFORM_AMD__',
+    '--use_fast_math',
     '-lrt',
     '-lpthread',
     '-ldl',
-    '-lcuda',
-    '-lcudadevrt',
-    '-lcudart_static',
-    '-lcublas',
-    '-lineinfo',
+    '-lhipblas',            # Link HIP BLAS
+    '-lrocblas',            # Link ROC BLAS
     '-shared',
-    '-fPIC',
     f'-lpython{PYTHON_VERSION}'
 ]
 
@@ -56,6 +47,7 @@ nvcc_flags = [
 include_dirs = [
     f'{THUNDERKITTENS_ROOT}/include',
     f'{MEGAKERNELS_ROOT}/include',
+    f'{ROCM_HOME}/include',
     pybind11.get_include(),
     get_python_include()
 ]
@@ -69,15 +61,19 @@ def get_python_config_flags():
         return []
 
 # Add python config flags
-nvcc_flags.extend(get_python_config_flags())
+hipcc_flags.extend(get_python_config_flags())
 
 # Conditional setup based on target GPU
-if TARGET == 'HOPPER':
-    nvcc_flags.extend(['-DKITTENS_HOPPER', '-arch=sm_90a'])
-elif TARGET == 'BLACKWELL':
-    nvcc_flags.extend(['-DKITTENS_HOPPER', '-DKITTENS_BLACKWELL', '-arch=sm_100a'])
+# Maps simplified names to AMD GFX architectures
+if TARGET in ['MI300', 'MI300X', 'gfx942']:
+    hipcc_flags.extend(['--offload-arch=gfx942'])
+elif TARGET in ['MI250', 'MI250X', 'gfx90a']:
+    hipcc_flags.extend(['--offload-arch=gfx90a'])
+elif TARGET == 'native':
+    hipcc_flags.extend(['--offload-arch=native'])
 else:
-    raise ValueError(f"Invalid target: {TARGET}")
+    # Fallback: assume the user provided a valid raw gfx arch (e.g. gfx90a)
+    hipcc_flags.extend([f'--offload-arch={TARGET}'])
 
 # Get python extension suffix
 def get_extension_suffix():
@@ -87,20 +83,21 @@ def get_extension_suffix():
     except subprocess.CalledProcessError:
         return '.so'
 
-# Custom build extension class to use nvcc
-class CudaExtension(Extension):
+# Custom build extension class to use hipcc instead of nvcc
+class HipExtension(Extension):
     def __init__(self, name, sources, **kwargs):
         super().__init__(name, sources, **kwargs)
 
-class CudaBuildExt(build_ext):
+class HipBuildExt(build_ext):
     def build_extension(self, ext):
-        if isinstance(ext, CudaExtension):
-            self.build_cuda_extension(ext)
+        if isinstance(ext, HipExtension):
+            self.build_hip_extension(ext)
         else:
             super().build_extension(ext)
     
-    def build_cuda_extension(self, ext):
-        nvcc = os.environ.get('NVCC', 'nvcc')
+    def build_hip_extension(self, ext):
+        # Locate hipcc
+        hipcc = os.environ.get('HIPCC', os.path.join(ROCM_HOME, 'bin/hipcc'))
         
         # Get the output file path
         ext_path = self.get_ext_fullpath(ext.name)
@@ -108,21 +105,21 @@ class CudaBuildExt(build_ext):
         # Ensure the directory exists
         os.makedirs(os.path.dirname(ext_path), exist_ok=True)
         
-        # Build the nvcc command
-        cmd = [nvcc] + ext.sources + nvcc_flags + ['-o', ext_path]
+        # Build the command
+        cmd = [hipcc] + ext.sources + hipcc_flags + ['-o', ext_path]
         
         # Add include directories
         for include_dir in include_dirs:
             cmd.extend(['-I', include_dir])
         
-        print(f"Building CUDA extension with command: {' '.join(cmd)}")
+        print(f"Building HIP extension with command: {' '.join(cmd)}")
         
         # Execute the command
         subprocess.check_call(cmd)
 
 # Define the extension
 ext_modules = [
-    CudaExtension(
+    HipExtension(
         '{{PROJECT_NAME_LOWER}}',
         sources=[SRC],
     )
@@ -131,7 +128,145 @@ ext_modules = [
 setup(
     name='{{PROJECT_NAME_LOWER}}',
     ext_modules=ext_modules,
-    cmdclass={'build_ext': CudaBuildExt},
+    cmdclass={'build_ext': HipBuildExt},
     zip_safe=False,
     python_requires=">=3.6",
 )
+
+# import os
+# import subprocess
+# from pybind11.setup_helpers import build_ext
+# import pybind11
+# from setuptools import setup, Extension
+
+# # Environment variables
+# THUNDERKITTENS_ROOT = os.environ.get('THUNDERKITTENS_ROOT', '')
+# MEGAKERNELS_ROOT = os.environ.get('MEGAKERNELS_ROOT', '')
+# PYTHON_VERSION = os.environ.get('PYTHON_VERSION', '3.13')
+
+# # Target GPU (default to HOPPER)
+# TARGET = os.environ.get('TARGET_GPU', 'HOPPER') # or BLACKWELL
+
+# # Source file
+# SRC = 'src/{{PROJECT_NAME_LOWER}}.cu'
+
+# # Get Python include directory
+# def get_python_include():
+#     try:
+#         python_include = subprocess.check_output(['python', '-c', "import sysconfig; print(sysconfig.get_path('include'))"]).decode().strip()
+#         return python_include
+#     except subprocess.CalledProcessError:
+#         return ''
+
+# # Base NVCC flags
+# nvcc_flags = [
+#     '-DNDEBUG',
+#     '-Xcompiler=-fPIE',
+#     '--expt-extended-lambda',
+#     '--expt-relaxed-constexpr',
+#     '-Xcompiler=-Wno-psabi',
+#     '-Xcompiler=-fno-strict-aliasing',
+#     '--use_fast_math',
+#     '-forward-unknown-to-host-compiler',
+#     '-O3',
+#     '-Xnvlink=--verbose',
+#     '-Xptxas=--verbose',
+#     '-Xptxas=--warn-on-spills',
+#     '-std=c++20',
+#     '-x', 'cu',
+#     '-lrt',
+#     '-lpthread',
+#     '-ldl',
+#     '-lcuda',
+#     '-lcudadevrt',
+#     '-lcudart_static',
+#     '-lcublas',
+#     '-lineinfo',
+#     '-shared',
+#     '-fPIC',
+#     f'-lpython{PYTHON_VERSION}'
+# ]
+
+# # Include directories
+# include_dirs = [
+#     f'{THUNDERKITTENS_ROOT}/include',
+#     f'{MEGAKERNELS_ROOT}/include',
+#     pybind11.get_include(),
+#     get_python_include()
+# ]
+
+# # Get python config flags
+# def get_python_config_flags():
+#     try:
+#         ldflags = subprocess.check_output(['python3-config', '--ldflags']).decode().strip().split()
+#         return ldflags
+#     except subprocess.CalledProcessError:
+#         return []
+
+# # Add python config flags
+# nvcc_flags.extend(get_python_config_flags())
+
+# # Conditional setup based on target GPU
+# if TARGET == 'HOPPER':
+#     nvcc_flags.extend(['-DKITTENS_HOPPER', '-arch=sm_90a'])
+# elif TARGET == 'BLACKWELL':
+#     nvcc_flags.extend(['-DKITTENS_HOPPER', '-DKITTENS_BLACKWELL', '-arch=sm_100a'])
+# else:
+#     raise ValueError(f"Invalid target: {TARGET}")
+
+# # Get python extension suffix
+# def get_extension_suffix():
+#     try:
+#         suffix = subprocess.check_output(['python3-config', '--extension-suffix']).decode().strip()
+#         return suffix
+#     except subprocess.CalledProcessError:
+#         return '.so'
+
+# # Custom build extension class to use nvcc
+# class CudaExtension(Extension):
+#     def __init__(self, name, sources, **kwargs):
+#         super().__init__(name, sources, **kwargs)
+
+# class CudaBuildExt(build_ext):
+#     def build_extension(self, ext):
+#         if isinstance(ext, CudaExtension):
+#             self.build_cuda_extension(ext)
+#         else:
+#             super().build_extension(ext)
+    
+#     def build_cuda_extension(self, ext):
+#         nvcc = os.environ.get('NVCC', 'nvcc')
+        
+#         # Get the output file path
+#         ext_path = self.get_ext_fullpath(ext.name)
+        
+#         # Ensure the directory exists
+#         os.makedirs(os.path.dirname(ext_path), exist_ok=True)
+        
+#         # Build the nvcc command
+#         cmd = [nvcc] + ext.sources + nvcc_flags + ['-o', ext_path]
+        
+#         # Add include directories
+#         for include_dir in include_dirs:
+#             cmd.extend(['-I', include_dir])
+        
+#         print(f"Building CUDA extension with command: {' '.join(cmd)}")
+        
+#         # Execute the command
+#         subprocess.check_call(cmd)
+
+# # Define the extension
+# ext_modules = [
+#     CudaExtension(
+#         '{{PROJECT_NAME_LOWER}}',
+#         sources=[SRC],
+#     )
+# ]
+
+# setup(
+#     name='{{PROJECT_NAME_LOWER}}',
+#     ext_modules=ext_modules,
+#     cmdclass={'build_ext': CudaBuildExt},
+#     zip_safe=False,
+#     python_requires=">=3.6",
+# )
