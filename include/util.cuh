@@ -31,7 +31,7 @@ __device__ inline void invalidate_semaphore(kittens::hip_semaphore& sem) {
 // this just returns streaming multiprocessor id. 
 __device__ inline unsigned int get_smid() {
     unsigned int ret;
-    asm volatile("mov.u32 %0, %smid;" : "=r"(ret));
+    //asm volatile("mov.u32 %0, %smid;" : "=r"(ret));
     return ret;
 }
 
