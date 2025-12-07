@@ -1,4 +1,4 @@
-#pragma once
+       #pragma once
 
 #include "kittens.cuh"
 
@@ -14,24 +14,19 @@ namespace controller {
 template<typename config> 
 __device__ void inline load_instructions(int *instructions, int task_iter, const typename config::globals &globals, kittens::hip_semaphore &bar) {
     if(::kittens::laneid() == 0) {
-        constexpr int ints_per_instruction = config::INSTRUCTION_WIDTH; // Or globals.instructions.cols() if static dim available
+        constexpr int ints_per_instruction = config::INSTRUCTION_WIDTH;
         constexpr int bytes = ints_per_instruction * sizeof(int);
-        
-        // AMD: No tma::expect_bytes equivalent needed for simple async copy.
-        // We use the pointer-based async copy intrinsic.
         
         int *dst_ptr = instructions; // Shared memory destination
         const int *src_ptr = &globals.instructions[kittens::coord<>{(int)(get_worker_id()), task_iter, 0}]; // Global memory source
 
-        // AMD: Async copy from Global to Shared (LDS)
-        // __memcpy_async is a standard HIP/CUDA intrinsic for this.
-        // It maps to cp.async on NVIDIA and potentially buffer_load_lds on AMD.
-        // Alternatively, use the HipKittens intrinsic if exposed: 
-        // kittens::copy_async(dst_tile, src_tile, bar) -> but here we have raw pointers.
+        // FIX: The intrinsic __memcpy_async is not universally supported/declared on AMD.
+        // Replace with a synchronous copy since the calling function provides a wave barrier.
+        // If an async copy is strictly required, you must use a compiler-defined intrinsic 
+        // or a framework function guaranteed to work on AMD, or a simple loop copy.
         
-        // Using standard HIP async copy:
-        __memcpy_async(dst_ptr, src_ptr, bytes, __builtin_amdgcn_s_memtime()); 
-        
+        // Option 1: Synchronous copy using standard library function
+        memcpy(dst_ptr, src_ptr, bytes);  
         // NOTE: The original code passed a 'bar' (mbarrier).
         // On AMD, we don't attach the barrier to the instruction.
         // Instead, we just issue the load. The caller typically waits for completion 
