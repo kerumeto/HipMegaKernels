@@ -16,9 +16,9 @@ template <typename config, typename globals, typename... ops>
 __device__ inline void mk_internal(const globals &g) {
     uint64_t start_time = (uint64_t)clock64();
 #ifdef MK_DEBUG
-    if (threadIdx.x == 0)
-        printf("Thread %d: Kernel launched\n", threadIdx.x);
-    group<config::NUM_WARPS>::sync(15);
+    // if (threadIdx.x == 0)
+    //     printf("Thread %d: Kernel launched\n", threadIdx.x);
+    // group<config::NUM_WARPS>::sync(15);
 #endif
     __shared__ alignas(128) instruction_state_t<config>
         instruction_state[config::INSTRUCTION_PIPELINE_STAGES];
@@ -38,13 +38,13 @@ __device__ inline void mk_internal(const globals &g) {
         *reinterpret_cast<typename state<config>::page_array_t *>(
             aligned_shm_addr);
 #ifdef KITTENS_BLACKWELL
-    typename state<config>::tensor_allocator_t tensor_alloc{};
+    // typename state<config>::tensor_allocator_t tensor_alloc{};
 #endif
 
 #ifdef MK_DEBUG
-    if (threadIdx.x == 0)
-        printf("Thread %d: Pre-MKS creation\n", threadIdx.x);
-    group<config::NUM_WARPS>::sync(15);
+    // if (threadIdx.x == 0)
+    //     printf("Thread %d: Pre-MKS creation\n", threadIdx.x);
+    // group<config::NUM_WARPS>::sync(15);
 #endif
     state<config> mks{instruction_state,
                       instruction_arrived,
@@ -55,20 +55,20 @@ __device__ inline void mk_internal(const globals &g) {
                       pages,
                       page_finished,
 #ifdef KITTENS_BLACKWELL
-                      tensor_finished,
+                    //   tensor_finished,
 #endif
                       semaphores_ready,
                       start_time
 #ifdef KITTENS_BLACKWELL
-                      ,
-                      tensor_alloc
+                    //   ,
+                    //   tensor_alloc
 #endif
     }; // megakernel state
 
 #ifdef MK_DEBUG
-    if (threadIdx.x == 0)
-        printf("Thread %d: Created MKS\n", threadIdx.x);
-    group<config::NUM_WARPS>::sync(15);
+    // if (threadIdx.x == 0)
+    //     printf("Thread %d: Created MKS\n", threadIdx.x);
+    // group<config::NUM_WARPS>::sync(15);
 #endif
 
     // Zero initial timings memory.
@@ -93,27 +93,45 @@ __device__ inline void mk_internal(const globals &g) {
     }
     if (threadIdx.x == 0) {
 #ifdef KITTENS_BLACKWELL
-        init_semaphore(tensor_finished, config::NUM_CONSUMER_WARPS);
-        arrive(tensor_finished,
-               config::NUM_CONSUMER_WARPS); // Flip to state 0, to mark that it
-                                            // starts as available.
+        // init_semaphore(tensor_finished, config::NUM_CONSUMER_WARPS);
+        // arrive(tensor_finished,
+        //        config::NUM_CONSUMER_WARPS); // Flip to state 0, to mark that it
+        //                                     // starts as available.
 #endif
         init_semaphore(semaphores_ready, 1);
     }
 
     // dont neeed this for md
     // asm volatile("fence.proxy.async.shared::cta;\n" ::: "memory");
-    __syncthreads();
+    // Use a memory fence to ensure that semaphores are actually initialized in
+    // and can be seen by other threads. This DOES NOT sync threads and wait
+    // for work to be completed. It simply ensures we point to new memory
+    // values created/modified by threads.
+    __threadfence_block();
 
-    if (config::CLUSTER_BLOCKS == 1)
-        kittens::everyone::sync(15); // all warps must arrive here, confirming semaphore
-                            // initialization is visible to all threads.
-    else
-        kittens::everyone::tma::cluster::sync();
+    if (config::CLUSTER_BLOCKS == 1){
+        // kittens::everyone::sync(15); // all warps must arrive here, confirming semaphore
+        //                     // initialization is visible to all threads.
+        // The above code used ID 15 to wait on barrier id 15, but these
+        // barrier ids are not exposed in AMD. Instead just sync all threads.
+        // Remmeber that syncing all threads within a thread block implicitly
+        // syncs all warps.
+        // Hierarchy is thread block -> warps (x warps; however many fit in a block) -> threads (32 per warp)
+        __syncthreads();
+    }
+    else {
+        // On modern NVIDIA GPUs, you are able to group multiple thread blocks
+        // into clusters that can share memory and sync with each other.
+        // AMD does not support this behavior and would instead require 
+        // synchronization using global memory atomics. For now, we just ensure
+        // that we run with cluster size 1, and sync threads within the block.
+        // kittens::everyone::tma::cluster::sync();
+        static_assert(false, "CLUSTER_BLOCKS > 1 is not supported on AMD GPUs");
+    }
 
 #ifdef MK_DEBUG
-    if (blockIdx.x == 0 && threadIdx.x == 0)
-        mks.print();
+    // if (blockIdx.x == 0 && threadIdx.x == 0)
+    //     mks.print();
 #endif
 
     if (kittens::warpid() < config::NUM_CONSUMER_WARPS) {
@@ -145,10 +163,15 @@ __device__ inline void mk_internal(const globals &g) {
     printf("Thread %d arriving at final barrier\n", threadIdx.x);
 #endif
 
-    if (config::CLUSTER_BLOCKS > 1)
-        kittens::everyone::tma::cluster::sync();
-    else
-        kittens::everyone::sync(15);
+    // See above comments on why CLUSTER_BLOCKS == 1 is required for AMD GPUs.
+    if (config::CLUSTER_BLOCKS > 1) {
+        // kittens::everyone::tma::cluster::sync();
+        __syncthreads();
+    }
+    else {
+        // kittens::everyone::sync(15);
+        static_assert(false, "CLUSTER_BLOCKS > 1 is not supported on AMD GPUs");
+    }
 
 #ifdef MK_DEBUG
     uint64_t end_time = (uint64_t)clock64();

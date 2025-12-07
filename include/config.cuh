@@ -26,6 +26,7 @@ struct default_config {
     static constexpr int NUM_WARPS = 4 + NUM_CONSUMER_WARPS;
     static constexpr int NUM_THREADS = NUM_WARPS * ::kittens::WARP_THREADS;
     static constexpr int NUM_BLOCKS = 1;
+    // THIS HAS TO BE ONE FOR AMD GPUS TO AVOID COMPLEXITY WITH CLUSTER SYNCING
     static constexpr int CLUSTER_BLOCKS = 1;
     static constexpr int MAX_SHARED_MEMORY = ::kittens::MAX_SHARED_MEMORY;
 
