@@ -20,8 +20,9 @@ __device__ inline void mk_internal(const globals &g) {
     //     printf("Thread %d: Kernel launched\n", threadIdx.x);
     // group<config::NUM_WARPS>::sync(15);
 #endif
-    __shared__ alignas(128) instruction_state_t<config>
-        instruction_state[config::INSTRUCTION_PIPELINE_STAGES];
+    __shared__ instruction_state_t<config>
+    instruction_state[config::INSTRUCTION_PIPELINE_STAGES]
+    __attribute__((aligned(128)));
     __shared__ kittens::hip_semaphore
         page_finished[config::NUM_PAGES]
                      [config::INSTRUCTION_PIPELINE_STAGES_BITS],
