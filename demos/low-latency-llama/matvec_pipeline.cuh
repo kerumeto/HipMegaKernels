@@ -217,10 +217,10 @@ struct matvec_pipeline {
 
             matvec(out_smem, weights, activations_vec);
 
-            // kittens::warp::sync();
+            // kittens::sync();
              __builtin_amdgcn_wave_barrier();
-            // kittens::warp::arrive(outputs_arrived(s, output_stage));
-            // kittens::warp::arrive(weights_finished(s, input_stage));
+            // kittens::arrive(outputs_arrived(s, output_stage));
+            // kittens::arrive(weights_finished(s, input_stage));
             outputs_arrived(s, output_stage).arrive();
             weights_finished(s, input_stage).arrive();
 
@@ -263,7 +263,7 @@ struct matvec_pipeline {
             if ((i + 1) % iter_scale == 0) {
                 for (int j = 0; j < iter_scale; j++) {
                     auto stage_to_arrive = (i - j) % OUTPUT_PIPELINE_STAGES;
-                    // kittens::warp::arrive(outputs_finished(s, stage_to_arrive));
+                    // kittens::arrive(outputs_finished(s, stage_to_arrive));
                     outputs_finished(s, stage_to_arrive).arrive();
 
                 }
@@ -364,7 +364,7 @@ struct rms_matvec_pipeline
         }
         kittens::group<Config::NUM_CONSUMER_WARPS>::sync(3);
 
-        kittens::warp::load(activations_smem, g.*ActPtr, {kittens::warpid()});
+        kittens::load(activations_smem, g.*ActPtr, {kittens::warpid()});
 
         auto activation_page = get_activation_page(s);
 
@@ -375,7 +375,7 @@ struct rms_matvec_pipeline
             rms_scale_smem, activations_smem, g.rms_norm_eps,
             pipeline::get_output_start(s, pipeline::OUTPUT_PIPELINE_STAGES));
 
-        // kittens::warp::sync();
+        // kittens::sync();
          __builtin_amdgcn_wave_barrier();
         s.warp_finish_page(activation_page, 1);
 

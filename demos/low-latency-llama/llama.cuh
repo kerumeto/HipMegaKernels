@@ -82,10 +82,10 @@ struct globals_t {
         kittens::gl<kittens::bf16, 1, -1, -1, hidden_dim,
 	    // DOUBLE CHECK: Setting shape to 0 since files like:
 	    // HipKittens/analysis/rotary/mi350x/kernel_1024.cpp tend to set it to 0
-           kittens::st_bf<matvec_block_size, 512, 0>>; // assumed to be N by 2048 (X@W.T).
+           kittens::st_bf<matvec_block_size, 512>>; // assumed to be N by 2048 (X@W.T).
     using weights_big_indim_t =
         kittens::gl<kittens::bf16, 1, -1, -1, intermediate_dim,
-           kittens::st_bf<matvec_block_size, 512, 0>>; // assumed to be N by 2048 (X@W.T).
+           kittens::st_bf<matvec_block_size, 512>>; // assumed to be N by 2048 (X@W.T).
 
     using activations_t = kittens::gl<kittens::bf16, 1, 1, 1, hidden_dim, kittens::sv_bf<hidden_dim>,
                              kittens::sv_bf<head_dim>, kittens::sv_bf<matvec_block_size>>;

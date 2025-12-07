@@ -91,12 +91,12 @@ template <typename Config, typename Globals> struct attention_reduction {
         0; // Use only the first logical page
 
     __device__ static inline void wait_shared_page(megakernel::state<Config> &s) {
-        if (kittens::warp::laneid() == 0) {
+        if (kittens::laneid() == 0) {
             s.wait_page_ready(s.pid(SHARED_DATA_PAGE));
         }
     }
     __device__ static inline void finish_shared_page(megakernel::state<Config> &s) {
-        if (kittens::warp::laneid() == 0) {
+        if (kittens::laneid() == 0) {
             s.finish_page(s.pid(SHARED_DATA_PAGE), Config::NUM_CONSUMER_WARPS);
         }
     }
@@ -159,7 +159,7 @@ template <typename Config, typename Globals> struct attention_reduction {
 
     struct loader {
         static __device__ void run(const Globals &g, megakernel::state<Config> &s) {
-            auto laneid = kittens::warp::laneid();
+            auto laneid = kittens::laneid();
 
             if (laneid == 0) {
                 wait_shared_page(s);
@@ -167,14 +167,14 @@ template <typename Config, typename Globals> struct attention_reduction {
                 s.wait_page_ready(s.pid(laneid));
                 s.finish_page(s.pid(laneid), Config::NUM_CONSUMER_WARPS);
             }
-            // kittens::warp::sync(); // Have to make sure lane 0 finished waiting
+            // kittens::sync(); // Have to make sure lane 0 finished waiting
             __builtin_amdgcn_wave_barrier();
         }
     };
 
     struct launcher {
         static __device__ void run(const Globals &g, megakernel::state<Config> &s) {
-            if (kittens::warp::laneid() == 0) {
+            if (kittens::laneid() == 0) {
 #ifdef KITTENS_BLACKWELL
                 // s.wait_tensor_ready();
                 // arrive(s.tensor_finished, Config::NUM_CONSUMER_WARPS);
@@ -258,9 +258,9 @@ template <typename Config, typename Globals> struct attention_reduction {
                 o_rv current_out;
                 float current_lse;
 
-                kittens::warp::zero(accumulated_out);
+                kittens::zero(accumulated_out);
 
-                // kittens::warp::wait(L_partial_all_arrived(s, q_head_local_idx), 0);
+                // kittens::wait(L_partial_all_arrived(s, q_head_local_idx), 0);
 
                 L_partial_all_arrived(s, q_head_local_idx).wait(1);
 
@@ -271,7 +271,7 @@ template <typename Config, typename Globals> struct attention_reduction {
                 // --- Reduction Pipeline ---
                 for (int i = 0; i < inst.num_partials; ++i) {
                     int stage = i % NUM_STAGES;
-                    // kittens::warp::wait(O_partial_arrived(s, q_head_local_idx, stage),
+                    // kittens::wait(O_partial_arrived(s, q_head_local_idx, stage),
                     //            (i / NUM_STAGES) % 2);
                     int target = (i / NUM_STAGES) + 1;
                     O_partial_arrived(s, q_head_local_idx, stage).wait(target);
@@ -290,7 +290,7 @@ template <typename Config, typename Globals> struct attention_reduction {
 
                     current_lse = L_smem.data[cur_partial_idx];
                     // Load O_partial_reg
-                    kittens::warp::load(current_out, O_smem);
+                    kittens::load(current_out, O_smem);
 
                     float max_lse = max(accumulated_lse, current_lse);
 
@@ -302,30 +302,30 @@ template <typename Config, typename Globals> struct attention_reduction {
                     float accumulated_scale = accumulated_exp / new_denom;
                     float current_scale = current_exp / new_denom;
 
-                    kittens::warp::mul(accumulated_out, accumulated_out,
+                    kittens::mul(accumulated_out, accumulated_out,
                               accumulated_scale);
-                    kittens::warp::mul(current_out, current_out, current_scale);
-                    kittens::warp::add(accumulated_out, accumulated_out, current_out);
+                    kittens::mul(current_out, current_out, current_scale);
+                    kittens::add(accumulated_out, accumulated_out, current_out);
 
                     // Update LSE accumulator:
                     accumulated_lse = max_lse + log2f(new_denom);
 
-                    // kittens::warp::arrive(
+                    // kittens::arrive(
                     //     O_partial_finished(s, q_head_local_idx, stage));
                     O_partial_finished(s, q_head_local_idx, stage).arrive();
                 }
-                // kittens::warp::arrive(L_partial_all_finished(s, q_head_local_idx));
+                // kittens::arrive(L_partial_all_finished(s, q_head_local_idx));
                 L_partial_all_finished(s, q_head_local_idx).arrive();
 
                 o_final_sv &O_final_smem =
                     get_O_final_smem(s, q_head_local_idx);
-                kittens::warp::store(O_final_smem, accumulated_out);
-                // kittens::warp::sync();
+                kittens::store(O_final_smem, accumulated_out);
+                // kittens::sync();
 
                 // use inbiult amd one
                 __builtin_amdgcn_wave_barrier();
 
-                // kittens::warp::arrive(final_O_ready(s, q_head_local_idx));
+                // kittens::arrive(final_O_ready(s, q_head_local_idx));
                 final_O_ready(s, q_head_local_idx).arrive();
             }
         }
@@ -336,14 +336,14 @@ template <typename Config, typename Globals> struct attention_reduction {
     struct storer {
         static __device__ void run(const Globals &g, megakernel::state<Config> &s) {
             parsed_instruction inst{s};
-            if (kittens::warp::laneid() < Q_HEADS_PER_INSTRUCTION) {
-                int q_head_local_idx = kittens::warp::laneid();
+            if (kittens::laneid() < Q_HEADS_PER_INSTRUCTION) {
+                int q_head_local_idx = kittens::laneid();
 
                 o_final_sv &O_final_smem =
                     get_O_final_smem(s, q_head_local_idx);
                 // kittens::wait(final_O_ready(s, q_head_local_idx), 0);
                 final_O_ready(s, q_head_local_idx).wait(1);
-                if (kittens::warp::laneid() == 0) {
+                if (kittens::laneid() == 0) {
                     s.record(megakernel::TEVENT_OUTPUT_READY);
                 }
 
@@ -363,9 +363,9 @@ template <typename Config, typename Globals> struct attention_reduction {
             }
             finish_shared_page(s);
 
-            // kittens::warp::sync();
+            // kittens::sync();
             __builtin_amdgcn_wave_barrier();
-            if (kittens::warp::laneid() == 0) {
+            if (kittens::laneid() == 0) {
                 s.record(megakernel::TEVENT_AT_GMEM_STORE);
                 // asm volatile("fence.acq_rel.gpu;");
 

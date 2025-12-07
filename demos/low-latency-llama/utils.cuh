@@ -10,10 +10,10 @@ rms_norm(const sv_t &rms_scale_smem, const sv_t &activations_smem,
     using rv_t = kittens::rv_fl<sv_t::length>;
     rv_t activations_vec, sq_activations_vec, rms_scale_vec;
 
-    kittens::warp::load(activations_vec, activations_smem);
-    kittens::warp::copy(sq_activations_vec, activations_vec);
-    kittens::warp::mul(sq_activations_vec, sq_activations_vec, sq_activations_vec);
-    float partial_sum = kittens::warp::sum(sq_activations_vec);
+    kittens::load(activations_vec, activations_smem);
+    kittens::copy(sq_activations_vec, activations_vec);
+    kittens::mul(sq_activations_vec, sq_activations_vec, sq_activations_vec);
+    float partial_sum = kittens::sum(sq_activations_vec);
 
     float *smem_rms_partial_sums = (float *)scratch_memory;
     if (kittens::laneid() == 0) {
@@ -30,9 +30,9 @@ rms_norm(const sv_t &rms_scale_smem, const sv_t &activations_smem,
     float variance = full_sum / 2048.0f;
     float rms_scale = rsqrtf(variance + rms_norm_eps);
 
-    kittens::warp::mul(activations_vec, activations_vec, rms_scale);
-    kittens::warp::load(rms_scale_vec, rms_scale_smem);
-    kittens::warp::mul(activations_vec, activations_vec, rms_scale_vec);
+    kittens::mul(activations_vec, activations_vec, rms_scale);
+    kittens::load(rms_scale_vec, rms_scale_smem);
+    kittens::mul(activations_vec, activations_vec, rms_scale_vec);
 
     return activations_vec;
 }
@@ -51,20 +51,20 @@ __device__ inline void manual_hip_store_add(GlobalTile& global_dest, const Share
 
     kittens::rv_fl<Size> comp_f, res_f; // intermediate rgisters
 
-    kittens::warp::load(computed_reg, shared_src);
-    kittens::warp::load(residual_reg, global_dest, coord);
+    kittens::load(computed_reg, shared_src);
+    kittens::load(residual_reg, global_dest, coord);
 
     // convert to float
-    kittens::warp::copy(comp_f, computed_reg);
-    kittens::warp::copy(res_f, residual_reg);
+    kittens::copy(comp_f, computed_reg);
+    kittens::copy(res_f, residual_reg);
 
     // add and store in res_F
-    kittens::warp::add(res_f, res_f, comp_f);
+    kittens::add(res_f, res_f, comp_f);
 
     // store as bf16 again
-    kittens::warp::copy(result_reg, res_f);
+    kittens::copy(result_reg, res_f);
 
-    kittens::warp::store(global_dest, result_reg, coord);
+    kittens::store(global_dest, result_reg, coord);
 
     __threadfence();
     __builtin_amdgcn_s_waitcnt(0);
@@ -83,25 +83,25 @@ __device__ static inline void matvec(kittens::sv_fl<st_t::rows> &out_smem,
     using sv_t = kittens::sv_bf<st_t::rows>;
 
     rrv_t row_activations;
-    kittens::warp::copy(row_activations, activations);
+    kittens::copy(row_activations, activations);
 
     rt_t broadcast_activations, weights;
-    kittens::warp::broadcast_col(broadcast_activations, row_activations);
-    kittens::warp::load(weights, weights_smem);
+    kittens::broadcast_col(broadcast_activations, row_activations);
+    kittens::load(weights, weights_smem);
     kittens::rt_fl<16, 16> out_activations;
-    kittens::warp::zero(out_activations);
-    kittens::warp::mma_ABt(out_activations, weights, broadcast_activations,
+    kittens::zero(out_activations);
+    kittens::mma_ABt(out_activations, weights, broadcast_activations,
                   out_activations);
     rcv_t sum_col_vec;
-    kittens::warp::row_max(sum_col_vec, out_activations);
+    kittens::row_max(sum_col_vec, out_activations);
 
     rv_t sum_vec;
-    kittens::warp::copy(sum_vec, sum_col_vec);
+    kittens::copy(sum_vec, sum_col_vec);
 
     if (kittens::laneid() < 16) {
         out_smem[kittens::laneid()] = sum_vec[0][0];
     }
-    // kittens::warp::sync();
+    // kittens::sync();
      __builtin_amdgcn_wave_barrier();
 }
 #else
@@ -116,22 +116,22 @@ __device__ static inline void matvec(kittens::sv_fl<st_t::rows> &out_smem,
     using sv_t = kittens::sv_bf<st_t::rows>;
 
     rrv_t row_activations;
-    kittens::warp::copy(row_activations, activations);
+    kittens::copy(row_activations, activations);
 
     rt_t broadcast_activations, weights;
-    kittens::warp::broadcast_col(broadcast_activations, row_activations);
-    kittens::warp::load(weights, weights_smem);
-    kittens::warp::mul(broadcast_activations, broadcast_activations, weights);
+    kittens::broadcast_col(broadcast_activations, row_activations);
+    kittens::load(weights, weights_smem);
+    kittens::mul(broadcast_activations, broadcast_activations, weights);
     rcv_t sum_col_vec;
-    kittens::warp::row_sum(sum_col_vec, broadcast_activations);
+    kittens::row_sum(sum_col_vec, broadcast_activations);
 
     rv_t sum_vec;
-    kittens::warp::copy(sum_vec, sum_col_vec);
+    kittens::copy(sum_vec, sum_col_vec);
 
     if (kittens::laneid() < 16) {
         out_smem[kittens::laneid()] = sum_vec[0][0];
     }
-    // kittens::warp::sync();
+    // kittens::sync();
      __builtin_amdgcn_wave_barrier();
 }
 #endif
@@ -140,7 +140,7 @@ template <typename Config, kittens::ducks::sv::all sv_t, typename rv_t,
           int SCRATCH_BYTES_PER_WARP>
 __device__ static inline void matvec_reduce(uint8_t *scratch, rv_t &sum_vec) {
     rv_t part_vec;
-    kittens::warp::zero(sum_vec);
+    kittens::zero(sum_vec);
 
 #pragma unroll
     for (int i = 0; i < Config::NUM_CONSUMER_WARPS; i++) {
@@ -150,8 +150,8 @@ __device__ static inline void matvec_reduce(uint8_t *scratch, rv_t &sum_vec) {
         sv_t &part =
             *reinterpret_cast<sv_t *>(scratch + (i * SCRATCH_BYTES_PER_WARP));
 
-        kittens::warp::load(part_vec, part);
-        kittens::warp::add(sum_vec, sum_vec, part_vec);
+        kittens::load(part_vec, part);
+        kittens::add(sum_vec, sum_vec, part_vec);
     }
 }
 

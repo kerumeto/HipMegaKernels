@@ -91,11 +91,11 @@ template <typename config, typename globals> struct attention_partial {
         s.wait_page_ready(s.pid(KV_PAGE));
     }
     __device__ static inline void finish_QOL_page(megakernel::state<config> &s) {
-        if (kittens::warp::laneid() == 0)
+        if (kittens::laneid() == 0)
             s.finish_page(s.pid(QOL_PAGE), config::NUM_CONSUMER_WARPS);
     }
     __device__ static inline void finish_KV_page(megakernel::state<config> &s) {
-        if (kittens::warp::laneid() == 0)
+        if (kittens::laneid() == 0)
             s.finish_page(s.pid(KV_PAGE), config::NUM_CONSUMER_WARPS);
     }
     __device__ static inline q_st &get_Q_smem(megakernel::state<config> &s) {
@@ -219,10 +219,10 @@ template <typename config, typename globals> struct attention_partial {
                 for (int k = 0; k < dst.packed_per_tile; k++) {
                     const int col_idx_x = (j * dst.tile_size_col) +
                                           ((k / 2) * 8) +
-                                          ((kittens::warp::laneid() % 4) * 2);
+                                          ((kittens::laneid() % 4) * 2);
                     const int col_idx_y = (j * dst.tile_size_col) +
                                           ((k / 2) * 8) +
-                                          ((kittens::warp::laneid() % 4) * 2) + 1;
+                                          ((kittens::laneid() % 4) * 2) + 1;
                     if (col_idx_x >= col_idx) {
                         dst.tiles[i][j].data[k].x = val;
                     } else {
@@ -334,7 +334,7 @@ template <typename config, typename globals> struct attention_partial {
     };
     struct loader {
         static __device__ void run(const globals &g, megakernel::state<config> &s) {
-            auto laneid = kittens::warp::laneid();
+            auto laneid = kittens::laneid();
             if (laneid >= 2 && laneid < config::NUM_PAGES) {
                 int unused_page = s.pid(laneid);
                 s.wait_page_ready(unused_page);
@@ -368,14 +368,14 @@ template <typename config, typename globals> struct attention_partial {
         }
 
         static __device__ void run(const globals &g, megakernel::state<config> &s) {
-            // REMOVED: if (kittens::warp::laneid() == 0) 
+            // REMOVED: if (kittens::laneid() == 0) 
             // On AMD, global->shared loads are cooperative (vector instructions). 
             // The entire warp must participate in the 'kittens::load' calls below.
 
 #ifdef KITTENS_BLACKWELL
             // Keep existing Blackwell/NVIDIA logic guard if needed, 
             // but for AMD this block is likely irrelevant or handled differently.
-            // if (kittens::warp::laneid() == 0) {
+            // if (kittens::laneid() == 0) {
             //     s.wait_tensor_ready();
             //     arrive(s.tensor_finished, config::NUM_CONSUMER_WARPS);
             // }
@@ -493,10 +493,10 @@ template <typename config, typename globals> struct attention_partial {
                 max_vec_rv last_scaled_max_vec_reg;
                 max_vec_rv diff_scaled_max_vec_reg;
                 norm_vec_rv norm_vec_reg;
-                kittens::warp::neg_infty(max_vec_reg);
-                kittens::warp::zero(last_scaled_max_vec_reg); // just not +-inf
-                kittens::warp::zero(norm_vec_reg);
-                kittens::warp::zero(O_reg);
+                kittens::neg_infty(max_vec_reg);
+                kittens::zero(last_scaled_max_vec_reg); // just not +-inf
+                kittens::zero(norm_vec_reg);
+                kittens::zero(O_reg);
                 o_sv(&O_smem)[4] = get_O_smem(s);
                 l_sv &L_smem = get_L_smem(s);
 
@@ -511,7 +511,7 @@ template <typename config, typename globals> struct attention_partial {
                 // AMD: Explicitly wait for global (vmcnt) and shared (lgkmcnt) loads to complete
                 asm volatile("s_waitcnt vmcnt(0) lgkmcnt(0)");
 
-                kittens::warp::load(Q_reg, Q_smem);
+                kittens::load(Q_reg, Q_smem);
 
                 // Run the pipeline!
                 for (int i = 0; i + start_blk_idx < end_blk_idx; ++i) {
@@ -523,13 +523,13 @@ template <typename config, typename globals> struct attention_partial {
                     int wait_target = (i / NUM_STAGES) + 1;
 
                     // Perform Q @ K.T
-                    kittens::warp::zero(attn_fl_reg);
+                    kittens::zero(attn_fl_reg);
                     
                     // Wait for K producer
                     K_arrived(s, stage).wait(wait_target);
 
-                    kittens::warp::load(K_reg, K_smem);
-                    kittens::warp::mma_ABt(attn_fl_reg, Q_reg, K_reg, attn_fl_reg);
+                    kittens::load(K_reg, K_smem);
+                    kittens::mma_ABt(attn_fl_reg, Q_reg, K_reg, attn_fl_reg);
                     
                     // AMD: Wave barrier to ensure instruction issue order/visibility before signaling
                     __builtin_amdgcn_wave_barrier();
@@ -545,33 +545,33 @@ template <typename config, typename globals> struct attention_partial {
                                     -999999999999.f);
 
                     // Obtain maximums per row (which is per head)
-                    kittens::warp::row_max(max_vec_reg, attn_fl_reg,
+                    kittens::row_max(max_vec_reg, attn_fl_reg,
                                     max_vec_reg); // includes previous max
 
                     // Scale attention block and maximums by sqrt(D_h)
-                    kittens::warp::mul(attn_fl_reg, attn_fl_reg, softmax_temp);
-                    kittens::warp::mul(scaled_max_vec_reg, max_vec_reg, softmax_temp);
+                    kittens::mul(attn_fl_reg, attn_fl_reg, softmax_temp);
+                    kittens::mul(scaled_max_vec_reg, max_vec_reg, softmax_temp);
 
                     // Calculate softmax numerator
-                    kittens::warp::sub_row(attn_fl_reg, attn_fl_reg, scaled_max_vec_reg);
-                    kittens::warp::exp2(attn_fl_reg, attn_fl_reg);
+                    kittens::sub_row(attn_fl_reg, attn_fl_reg, scaled_max_vec_reg);
+                    kittens::exp2(attn_fl_reg, attn_fl_reg);
 
                     // Calculate softmax denominator
-                    kittens::warp::sub(diff_scaled_max_vec_reg, last_scaled_max_vec_reg,
+                    kittens::sub(diff_scaled_max_vec_reg, last_scaled_max_vec_reg,
                                 scaled_max_vec_reg);
-                    kittens::warp::exp2(diff_scaled_max_vec_reg,
+                    kittens::exp2(diff_scaled_max_vec_reg,
                                 diff_scaled_max_vec_reg);
 
                     // Normalize and accumulate numerator (A @ V)
-                    kittens::warp::mul_row(O_reg, O_reg, diff_scaled_max_vec_reg);
+                    kittens::mul_row(O_reg, O_reg, diff_scaled_max_vec_reg);
                     
                     // Wait for V producer
                     V_arrived(s, stage).wait(wait_target);
 
-                    kittens::warp::load(V_reg, V_smem);
-                    kittens::warp::copy(attn_bf_reg,
+                    kittens::load(V_reg, V_smem);
+                    kittens::copy(attn_bf_reg,
                                 attn_fl_reg); // Convert to bf16 to do matmul
-                    kittens::warp::mma_AB(O_reg, attn_bf_reg, V_reg, O_reg);
+                    kittens::mma_AB(O_reg, attn_bf_reg, V_reg, O_reg);
                     
                     __builtin_amdgcn_wave_barrier();
                     
@@ -579,12 +579,12 @@ template <typename config, typename globals> struct attention_partial {
                     V_finished(s, stage).arrive();
 
                     // Normalize and accumulate demoniator
-                    kittens::warp::mul(norm_vec_reg, norm_vec_reg,
+                    kittens::mul(norm_vec_reg, norm_vec_reg,
                                 diff_scaled_max_vec_reg);
-                    kittens::warp::row_sum(norm_vec_reg, attn_fl_reg, norm_vec_reg);
+                    kittens::row_sum(norm_vec_reg, attn_fl_reg, norm_vec_reg);
 
                     // Save for next iteration
-                    kittens::warp::copy(last_scaled_max_vec_reg, scaled_max_vec_reg);
+                    kittens::copy(last_scaled_max_vec_reg, scaled_max_vec_reg);
                 }
 
                 // Finish
@@ -592,15 +592,15 @@ template <typename config, typename globals> struct attention_partial {
 
                 if (start_blk_idx < end_blk_idx) {
                     finish_KV_page(s);
-                    kittens::warp::div_row(O_reg, O_reg, norm_vec_reg);
-                    kittens::warp::log2(L_reg, norm_vec_reg);
-                    kittens::warp::add(
+                    kittens::div_row(O_reg, O_reg, norm_vec_reg);
+                    kittens::log2(L_reg, norm_vec_reg);
+                    kittens::add(
                         L_reg, L_reg,
                         last_scaled_max_vec_reg); // now L_reg contains the LSE
                 } else {
                     // Very edgy case where no blocks are processed.
                     // Make the math work out during attention reduction!
-                    kittens::warp::neg_infty(L_reg);
+                    kittens::neg_infty(L_reg);
                 }
 
                 // Store the results
@@ -610,7 +610,7 @@ template <typename config, typename globals> struct attention_partial {
                 // Signal Output
                 O_arrived(s).arrive();
                 
-                kittens::warp::store(L_smem, L_reg);
+                kittens::store(L_smem, L_reg);
                 __builtin_amdgcn_wave_barrier();
                 
                 L_arrived(s).arrive();
@@ -639,15 +639,15 @@ template <typename config, typename globals> struct attention_partial {
                 auto &smem_fl = O_smem[head_offset];
                 
                 // 1. Load from Shared Memory (Float) into Register (BF16)
-                // Note: kittens::warp::load typically handles layout/type conversion
-                kittens::warp::load(O_bf, smem_fl);
+                // Note: kittens::load typically handles layout/type conversion
+                kittens::load(O_bf, smem_fl);
                 
                 // AMD: Wave barrier to ensure registers are ready before store
                 __builtin_amdgcn_wave_barrier();
 
                 // 2. Store from Register (BF16) directly to Global Memory
                 // Replacing TMA store with manual register-based store
-                kittens::warp::store(g.attn_out, O_bf, {q_head_start_idx + head_offset});
+                kittens::store(g.attn_out, O_bf, {q_head_start_idx + head_offset});
             }
 
             // AMD: Explicitly wait for global memory stores (vmcnt) to complete
@@ -672,10 +672,10 @@ template <typename config, typename globals> struct attention_partial {
 
             for (int head_offset = 0; head_offset < GQA_RATIO; head_offset++) {
                 // Load Shared -> Register
-                kittens::warp::load(O_reg, O_smem[head_offset]);
+                kittens::load(O_reg, O_smem[head_offset]);
 
                 // Store Register -> Global
-                kittens::warp::store(g.attn_out_intermediates, O_reg,
+                kittens::store(g.attn_out_intermediates, O_reg,
                     {0, q_head_start_idx + head_offset, inst.partial_idx, 0});
             }
             

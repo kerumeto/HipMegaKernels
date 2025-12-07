@@ -171,8 +171,8 @@ template <typename config> struct state {
         static_assert(num_bytes % 4 == 0, "num_bytes must be a multiple of 4");
         constexpr auto num_floats = num_bytes / 4;
         auto &scratch_vec = *reinterpret_cast<kittens::sv_fl<num_floats> *>(scratch());
-        kittens::warp::zero(scratch_vec);
-        // kittens::warp::sync();
+        kittens::zero(scratch_vec);
+        // kittens::sync();
          __builtin_amdgcn_wave_barrier();
     }
 
@@ -234,7 +234,7 @@ template <typename config> struct state {
     }
 
     __device__ inline void warp_finish_page(int pid, int count) {
-        if (kittens::warp::laneid() == 0) {
+        if (kittens::laneid() == 0) {
             finish_page(pid, count);
         }
     }

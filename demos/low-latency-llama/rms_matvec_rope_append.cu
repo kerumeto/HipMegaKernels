@@ -106,8 +106,8 @@ template <typename Config, typename Globals> struct rms_qkv_rope_append {
             kittens::sv_fl<16> &rope_sin_sv = *reinterpret_cast<kittens::sv_fl<16> *>(
                 get_rope_sin_ptr(s) + head_chunk * 64);
 
-            kittens::warp::load(rope_cos, rope_cos_sv);
-            kittens::warp::load(rope_sin, rope_sin_sv);
+            kittens::load(rope_cos, rope_cos_sv);
+            kittens::load(rope_sin, rope_sin_sv);
 
             /**
              * IMPORTANT: CHECK THIS. I dont know if this mask suff will work on amd / have to loop at hipkittens for this since laneid() is not same for Mi300x and that might mess 
@@ -118,7 +118,7 @@ template <typename Config, typename Globals> struct rms_qkv_rope_append {
 
                 // Fetch the neighbor values
                 int mod = (kittens::laneid() & 0b1) ? -1 : 1; // 1 for even, -1 for odd
-                // kittens::warp::sync();
+                // kittens::sync();
                  __builtin_amdgcn_wave_barrier();
                 float pair_val =
                     // MASK_ALL defined at HipKittens/include/common/util.cuh
@@ -133,10 +133,10 @@ template <typename Config, typename Globals> struct rms_qkv_rope_append {
                 }
             }
 
-            // kittens::warp::sync();
+            // kittens::sync();
              __builtin_amdgcn_wave_barrier();
-            kittens::warp::store(qkv_proj_smem_bf, qkv_proj);
-            // kittens::warp::sync();
+            kittens::store(qkv_proj_smem_bf, qkv_proj);
+            // kittens::sync();
              __builtin_amdgcn_wave_barrier();
 
             if (kittens::laneid() == 0) {
@@ -185,7 +185,7 @@ template <typename Config, typename Globals> struct rms_qkv_rope_append {
                 s.record(megakernel::TEVENT_DONE_GMEM_STORE);
             }
 
-            // kittens::warp::sync();
+            // kittens::sync();
              __builtin_amdgcn_wave_barrier();
         }
     };

@@ -96,22 +96,22 @@ template <typename Config, typename Globals> struct rms_upgate_silu {
                 output_scratch_start, gate_out);
 
             // neg
-            kittens::warp::mul(gate_scratch, gate_out, -1.f);
-            kittens::warp::exp(gate_scratch, gate_scratch);
-            kittens::warp::add(gate_scratch, gate_scratch, 1.f);
-            kittens::warp::div(gate_out, gate_out, gate_scratch);
+            kittens::mul(gate_scratch, gate_out, -1.f);
+            kittens::exp(gate_scratch, gate_scratch);
+            kittens::add(gate_scratch, gate_scratch, 1.f);
+            kittens::div(gate_out, gate_out, gate_scratch);
 
             // gating
-            kittens::warp::mul(gate_out, up_out, gate_out);
+            kittens::mul(gate_out, up_out, gate_out);
 
             // wait before we overwrite gate_out
-            // kittens::warp::sync();
+            // kittens::sync();
              __builtin_amdgcn_wave_barrier();
 
-            kittens::warp::store(out_smem, gate_out);
+            kittens::store(out_smem, gate_out);
 
             // wait before we store results to global memory
-            // kittens::warp::sync();
+            // kittens::sync();
              __builtin_amdgcn_wave_barrier();
 
             if (kittens::laneid() == 0) {
@@ -136,7 +136,7 @@ template <typename Config, typename Globals> struct rms_upgate_silu {
                 s.record(megakernel::TEVENT_DONE_GMEM_STORE);
             }
 
-            // kittens::warp::sync();
+            // kittens::sync();
              __builtin_amdgcn_wave_barrier();
         }
     };
