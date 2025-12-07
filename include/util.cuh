@@ -297,27 +297,27 @@ constexpr int TEVENT_TRIPLES_OUTPUT_READY = 125;
         for (mks.instruction_index = 0, mks.instruction_ring = 0;              \
              mks.instruction_index < num_iters; mks.next_instruction()) {      \
             mks.await_instruction();                                           \
-            if (kittens::laneid() == 0) {                                               \
+            if (kittens::laneid() == 0) {                                      \
                 if (is_consumer) {                                             \
-                    mks.record(start_event + 2 * kittens::warpid());                    \
+                    mks.record(start_event + 2 * kittens::warpid());           \
                 } else {                                                       \
                     mks.record(start_event);                                   \
                 }                                                              \
             }                                                                  \
-            dispatch_op<name##_op_dispatcher<config, globals>::dispatcher,     \
+            /* FIX APPLIED HERE: Added 'template' before 'dispatcher' */       \
+            dispatch_op<name##_op_dispatcher<config, globals>::template dispatcher, \
                         ops...>::template run<void, config, globals,           \
                                               ::megakernel::state<config>>(    \
                 mks.instruction()[0], g, mks);                                 \
-            if (kittens::laneid() == 0) {                                               \
+            if (kittens::laneid() == 0) {                                      \
                 if (is_consumer) {                                             \
-                    mks.record(start_event + 2 * kittens::warpid() + 1);                \
+                    mks.record(start_event + 2 * kittens::warpid() + 1);       \
                 } else {                                                       \
                     mks.record(start_event + 1);                               \
                 }                                                              \
             }                                                                  \
         }                                                                      \
-        // __syncwarp();  \ 
-        __builtin_amdgcn_wave_barrier();                                                        \
+        __builtin_amdgcn_wave_barrier();                                       \
         MK_DEBUG_PRINT_END(#name);                                             \
     }                                                                          \
     }                                                                          \

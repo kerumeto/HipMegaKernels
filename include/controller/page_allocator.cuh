@@ -69,13 +69,21 @@ __device__ void inline page_allocator_loop(const globals &g,
             int lane = kittens::laneid();
             int opcode =
                 kvms.all_instructions[last_instruction_ring].instructions[0];
+            // int lid = dispatch_op<
+            //     page_allocator_op_dispatcher<config, globals>::dispatcher,
+            //     ops...>::template run<int, config, globals,
+            //                           config::instruction_t, int>(
+            //     opcode, g,
+            //     kvms.all_instructions[last_instruction_ring].instructions,
+            //     lane);
             int lid = dispatch_op<
-                page_allocator_op_dispatcher<config, globals>::dispatcher,
+                page_allocator_op_dispatcher<config, globals>::template dispatcher, // FIXED
                 ops...>::template run<int, config, globals,
-                                      config::instruction_t, int>(
-                opcode, g,
-                kvms.all_instructions[last_instruction_ring].instructions,
-                lane);
+                                    config::instruction_t, int>(
+                    opcode, g,
+                    kvms.all_instructions[last_instruction_ring].instructions,
+                    lane
+                );
             next_pid =
                 kvms.all_instructions[last_instruction_ring].pid_order[lid];
         }

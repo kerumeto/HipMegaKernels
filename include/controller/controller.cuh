@@ -98,8 +98,17 @@ __device__ void main_loop(const globals &g, ::megakernel::state<config> &kvms) {
                 kvms.all_instructions[last_instruction_ring].instructions[0];
 
             if (laneid < config::NUM_PAGES) {
+                // Original:
+//                 int lid = dispatch_op<
+//                     page_allocator_op_dispatcher<config, globals>::dispatcher,
+//                     ops...>::template run<int, config, globals,
+//                                           config::instruction_t, int>(
+//                     last_opcode, g,
+//                     kvms.all_instructions[last_instruction_ring].instructions,
+//                     laneid);
+
                 int lid = dispatch_op<
-                    page_allocator_op_dispatcher<config, globals>::dispatcher,
+                    page_allocator_op_dispatcher<config, globals>::template dispatcher,
                     ops...>::template run<int, config, globals,
                                           config::instruction_t, int>(
                     last_opcode, g,
@@ -120,10 +129,19 @@ __device__ void main_loop(const globals &g, ::megakernel::state<config> &kvms) {
         if (opcode == 0) {
             num_semaphores[kvms.instruction_ring] = 0;
         } else {
+            // Original:
+//             if (laneid == 0) {
+//                 num_semaphores[kvms.instruction_ring] = dispatch_op<
+//                     semaphore_constructor_op_dispatcher<config,
+//                                                         globals>::dispatcher,
+//                     ops...>::template run<int, config, globals,
+//                                           ::megakernel::state<config>>(opcode,
+//                                                                        g, kvms);
+//             }
             if (laneid == 0) {
                 num_semaphores[kvms.instruction_ring] = dispatch_op<
                     semaphore_constructor_op_dispatcher<config,
-                                                        globals>::dispatcher,
+                                                        globals>::template dispatcher,
                     ops...>::template run<int, config, globals,
                                           ::megakernel::state<config>>(opcode,
                                                                        g, kvms);

@@ -47,12 +47,15 @@ __device__ void inline semaphore_constructor_loop(
         if (opcode == 0) {
             next_num_semaphores = 0;
         } else {
+            // next_num_semaphores = dispatch_op<
+            //     semaphore_constructor_op_dispatcher<config,
+            //                                         globals>::dispatcher,
+            //     ops...>::template run<int, config, globals,
+            //                           ::megakernel::state<config>>(
+            //     opcode, g, kvms);
+                
             next_num_semaphores = dispatch_op<
-                semaphore_constructor_op_dispatcher<config,
-                                                    globals>::dispatcher,
-                ops...>::template run<int, config, globals,
-                                      ::megakernel::state<config>>(
-                opcode, g, kvms);
+                semaphore_constructor_op_dispatcher<config, globals>::template dispatcher, ops...>::template run<int, config, globals,::megakernel::state<config>>(opcode, g, kvms);
         }
         
         // AMD: Signal ready
@@ -98,3 +101,4 @@ __device__ void inline semaphore_constructor_loop(
 }
 } // namespace controller
 } // namespace megakernel
+
