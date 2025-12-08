@@ -27,7 +27,7 @@ template <typename config, typename globals> struct attention_partial {
     using v_rt = kittens::rt_bf<LLAMA_1B_KV_BLOCK_SIZE, LLAMA_1B_HEAD_DIM, col_l>;
     using kv_st = kittens::st_bf<LLAMA_1B_KV_BLOCK_SIZE, LLAMA_1B_HEAD_DIM>;
     using attn_fl_rt =
-        kittens::rt_fl<16, LLAMA_1B_KV_BLOCK_SIZE>; // only 4 values are used
+        kittens::rt_fl<16, LLAMA_1B_KV_BLOCK_SIZE, kittens::ducks::rt_layout::col>; // only 4 values are used. mma_ABt requires column major layout.
     using attn_bf_rt =
         kittens::rt_bf<16, LLAMA_1B_KV_BLOCK_SIZE>; // only 4 values are used
     using max_vec_rv =
@@ -39,7 +39,7 @@ template <typename config, typename globals> struct attention_partial {
     using l_rv =
         col_vec<kittens::rt_fl<16, LLAMA_1B_HEAD_DIM>>; // only 4 values are used
     using l_sv = kittens::sv_fl<16>;                    // only 4 values are used
-    using o_rt = kittens::rt_fl<16, LLAMA_1B_HEAD_DIM>; // only 4 rows are used
+    using o_rt = kittens::rt_fl<16, LLAMA_1B_HEAD_DIM, kittens::ducks::rt_layout::col>; // only 4 rows are used. mma_AB requires column major layout
     using o_sv = kittens::sv_fl<LLAMA_1B_HEAD_DIM>;
     using o_sv_bf = kittens::sv_bf<LLAMA_1B_HEAD_DIM>;
 
@@ -204,7 +204,8 @@ template <typename config, typename globals> struct attention_partial {
             }
         }
     }
-    template <ducks::rt::row_layout RT>
+    // right_fill only accepts row_layout BUT attn_fl_rt and o_rt in column major
+    template <ducks::rt::all RT>
     __device__ static inline void right_fill(
         RT &dst, const RT &src, const int col_idx,
         const typename base_types::packing<typename RT::dtype>::unpacked_type
@@ -540,6 +541,7 @@ template <typename config, typename globals> struct attention_partial {
                     K_arrived(s, stage).wait(wait_target);
 
                     kittens::load(K_reg, K_smem);
+                    // enforces column-major layout. attn_fl_rt
                     kittens::mma_ABt(attn_fl_reg, Q_reg, K_reg, attn_fl_reg);
                     
                     // AMD: Wave barrier to ensure instruction issue order/visibility before signaling
