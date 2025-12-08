@@ -7,6 +7,17 @@
 // HIP: Include the kittens utilities for async loads/stores
 #include "kittens.cuh" 
 
+// Explicit declaration of the AMD LLVM intrinsic for load_Q_async
+extern "C" __device__ void llvm_amdgcn_raw_buffer_load_lds(
+    i32x4 rsrc,             // 128-bit buffer resource
+    __attribute__((address_space(3))) void* lds_ptr, // Local memory pointer
+    int size,                        // Bytes to load (e.g., 4, 16)
+    int voffset,                     // Thread-variable offset
+    int soffset,                     // Scalar offset
+    int offset,                      // Immediate offset
+    int aux                          // Auxiliary flags (cache policy)
+);
+
 using namespace kittens;
 using namespace megakernel;
 
@@ -249,26 +260,52 @@ template <typename config, typename globals> struct attention_partial {
         static_assert(LLAMA_1B_HEAD_DIM == 64 && GQA_RATIO == 4,
                       "Fix this function.");
         using T = typename q_st::dtype;
+        static_assert(sizeof(typename q_st::dtype) == 2, "Edit load_Q_async");
+
+        // loading 16 bytes (128bits) per thread per instruction to match CUDA original
+        // IMPORTANT: may need to change this to 32 bytes since AMD has 64 threads per warp
         constexpr int elem_per_memcpy =
             sizeof(float4) / sizeof(typename q_st::dtype);                  // 8
         constexpr int memcpy_per_row = LLAMA_1B_HEAD_DIM / elem_per_memcpy; // 8
 
-        typename globals::activations_t::dtype *src_ptr =
-            &src.raw_ptr[q_head_start_idx * LLAMA_1B_HEAD_DIM];
-        uint32_t dst_ptr = static_cast<uint32_t>(__cvta_generic_to_shared(
-            &dst.data[(q_head_start_idx % 16) * LLAMA_1B_HEAD_DIM]));
+        int laneid = kittens::laneid();
+        // thread mapping 64 threads in wavefront to 8 rows of 8 threads each
+        // CHECK IMPORTANT: will this change algo correctness later on 
 
-        int laneid = kittens::warp::laneid();
-        int row = laneid / memcpy_per_row;
-        int col = (laneid * elem_per_memcpy) % LLAMA_1B_HEAD_DIM;
+        int row_offset = laneid / memcpy_per_row;
+        int col_chunk = laneid % memcpy_per_row;
+        // CHECK: assumes 16 x 16 tile
+        int tile_row = (q_head_start_idx % 16) + row_offset;
+        int tile_col = col_chunk * elem_per_memcpy;
 
-        // everything should fit!
-        asm volatile(
-            "cp.async.cg.shared.global.L2::128B [%0], [%1], 16;\n" ::"r"(
-                dst.idx(dst_ptr, {row, col})),
-            "l"(&src_ptr[row * LLAMA_1B_HEAD_DIM + col])
-            : "memory");
-        asm volatile("cp.async.commit_group;\n" ::: "memory");
+        // Global Memory Address (Source)
+        // Create a resource descriptor for the activations buffer
+        // CHECK: used a huge limit
+        i32x4 srsrc = make_srsrc(src.raw_ptr, 0x7fffffff);
+
+        uint64_t global_row = q_head_start_idx + row_offset;
+        uint64_t global_linear_idx = global_row * LLAMA_1B_HEAD_DIM + tile_col;
+        uint32_t global_byte_offset = global_linear_idx * sizeof(T);
+
+        // Shared memory address (destination)
+        // should use swizzling to avoid bank conflicts (i.e. add offset to lds_base), but not doing so rn for simplicity
+
+        // LDS (AMD Shared mem) is in address space 3
+        using as3_ptr = __attribute__((address_space(3))) void*;
+        uintptr_t lds_base = reinterpret_cast<uintptr_t>(&dst.data[0]);
+        as3_ptr lds_ptr = reinterpret_cast<as3_ptr>(lds_base);
+
+        // CHECK: i dont think the ptrs are quite the same as cuda original
+        // Load 16 bytes from Global[voffset] -> Shared[lds_ptr]. synchronous.
+        llvm_amdgcn_raw_buffer_load_lds(
+            srsrc,              // rsrc: Buffer resource descriptor
+            lds_ptr,            // lds:  Destination address in shared memory
+            16,     // size: Bytes to load (must be constant 16/4 etc)
+            global_byte_offset, // voffset: Variable offset in global memory
+            0,                  // soffset: Scalar offset (0 here)
+            0,                  // offset:  Immediate offset
+            static_cast<int>(coherency::cache_all) // aux: Cache policy
+        );
     }
 
     struct controller {
