@@ -90,7 +90,7 @@ template <typename config> struct __align__(128) instruction_state_t {
 
 __device__ inline void invalidate_semaphore(kittens::hip_semaphore& sem) {
     // no need to chck lane since we want each thread to reset its own semaphore
-    *sem.count = 0; 
+    sem.count = 0; 
     
     // Ensure the write is visible to other blocks/warps
     __threadfence(); 

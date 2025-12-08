@@ -111,8 +111,10 @@ struct globals_t {
                                         kittens::sv_fl<((sm_count + 15) / 16) * 16>>;
 
     // num_layers by 6 ops per layer by up to 48 heads (Q + K + V)
+    // TODO: uint isnt supported in hipkittens as a type for gl template, but was supported in the original megakernels implementation
     using barriers =
-        kittens::gl<uint, 1, -1, -1, num_attention_heads + 2 * num_kv_heads>;
+        kittens::gl<int, 1, -1, -1, num_attention_heads + 2 * num_kv_heads>;
+
 
     // vm stuff
     barriers Bar;

@@ -280,14 +280,25 @@ template <typename config, typename globals> struct attention_partial {
         // This is an llvm intrinsic that is linked and exposed within
         // hip-kittens. We call it from here to perform the "fake" async load.
         // See HipKittens/include/ops/warp/memory/util/util.cuh::llvm_amdgcn_raw_buffer_load_lds
-        kittens::llvm_amdgcn_raw_buffer_load_lds(
-            srd,                                                 // Resource descriptor
-            reinterpret_cast<kittens::as3_uint32_ptr>(dst_ptr + offset_elems), // LDS destination address
-            bytes_per_load,                                      // Size in bytes (16)
-            offset_bytes,                                        // VOffset (byte offset from src_ptr)
-            0,                                                   // SOffset
-            0,                                                   // Offset (immediate)
-            0                                                    // Aux (cache coherency)
+        // kittens::llvm_amdgcn_raw_buffer_load_lds(
+        //     srd,                                                 // Resource descriptor
+        //     reinterpret_cast<kittens::as3_uint32_ptr>(dst_ptr + offset_elems), // LDS destination address
+        //     bytes_per_load,                                      // Size in bytes (16)
+        //     offset_bytes,                                        // VOffset (byte offset from src_ptr)
+        //     0,                                                   // SOffset
+        //     0,                                                   // Offset (immediate)
+        //     0                                                    // Aux (cache coherency)
+        // );
+
+        // IMPORTANT: no HipKittens CDNA3 equivalent.
+        __builtin_amdgcn_raw_ptr_buffer_load_lds(
+            srd,
+            reinterpret_cast<as3_uint32_ptr>(dst_ptr + offset_elems),
+            bytes_per_load,
+            offset_bytes,
+            0,
+            0,
+            0
         );
 
         // Note: No 'cp.async.commit_group' needed on AMD. The async actions
