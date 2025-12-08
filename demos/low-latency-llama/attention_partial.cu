@@ -238,7 +238,7 @@ template <typename config, typename globals> struct attention_partial {
             }
         }
     }
-     // This is super specific to loading Q in a single kittens::warp
+    // This is super specific to loading Q in a single kittens::warp
     // Mainly two things are different:
     //   1. Ignores Q global dimensions
     //   2. Only loads 4 rows of Q, not 16 (assumes GQA_RATIO == 4) --> only 32
@@ -248,63 +248,27 @@ template <typename config, typename globals> struct attention_partial {
                  const int q_head_start_idx /*0, 4, 8, ...*/) {
         static_assert(LLAMA_1B_HEAD_DIM == 64 && GQA_RATIO == 4,
                       "Fix this function.");
-        
         using T = typename q_st::dtype;
-        // AMD "cp.async" equivalent (buffer_load_lds) typically operates on 16 bytes (float4 equivalent)
-        constexpr int bytes_per_load = 16;
-        constexpr int elem_per_load = bytes_per_load / sizeof(T); // 8 elements (if T is bf16)
-        constexpr int loads_per_row = LLAMA_1B_HEAD_DIM / elem_per_load; // 8 calls covers a row
+        constexpr int elem_per_memcpy =
+            sizeof(float4) / sizeof(typename q_st::dtype);                  // 8
+        constexpr int memcpy_per_row = LLAMA_1B_HEAD_DIM / elem_per_memcpy; // 8
 
-        // 1. Setup Source (Global Memory) using SRD (Shader Resource Descriptor)
-        const T *src_ptr = &src.raw_ptr[q_head_start_idx * LLAMA_1B_HEAD_DIM];
-        // Create a buffer resource descriptor for the source memory
-        // The range 0xFFFFFFFF is a safe default for flat pointers if size isn't strictly bounded here
-        // We do this because Nvidia doesn't do any bounds checking
-        // DEBUG: If we error here put the max size that is possible without
-        // causing warnings
-        auto srd = kittens::make_srsrc(src_ptr, 0xFFFFFFFF);
+        typename globals::activations_t::dtype *src_ptr =
+            &src.raw_ptr[q_head_start_idx * LLAMA_1B_HEAD_DIM];
+        uint32_t dst_ptr = static_cast<uint32_t>(__cvta_generic_to_shared(
+            &dst.data[(q_head_start_idx % 16) * LLAMA_1B_HEAD_DIM]));
 
-        // 2. Setup Destination (Shared Memory)
-        // Calculate pointer to the start of the chunk in shared memory
-        T *dst_ptr = &dst.data[(q_head_start_idx % 16) * LLAMA_1B_HEAD_DIM];
+        int laneid = kittens::warp::laneid();
+        int row = laneid / memcpy_per_row;
+        int col = (laneid * elem_per_memcpy) % LLAMA_1B_HEAD_DIM;
 
-        // 3. Calculate Offsets based on Lane ID
-        int laneid = kittens::laneid();
-        int row = laneid / loads_per_row; // 0..3
-        int col = (laneid * elem_per_load) % LLAMA_1B_HEAD_DIM; // 0, 8, 16...
-
-        int offset_elems = row * LLAMA_1B_HEAD_DIM + col;
-        int offset_bytes = offset_elems * sizeof(T);
-
-        // 4. Issue Asynchronous Load (Global -> LDS)
-        // Cast shared pointer to address_space(3) for the intrinsic
-        // This is an llvm intrinsic that is linked and exposed within
-        // hip-kittens. We call it from here to perform the "fake" async load.
-        // See HipKittens/include/ops/warp/memory/util/util.cuh::llvm_amdgcn_raw_buffer_load_lds
-        // kittens::llvm_amdgcn_raw_buffer_load_lds(
-        //     srd,                                                 // Resource descriptor
-        //     reinterpret_cast<kittens::as3_uint32_ptr>(dst_ptr + offset_elems), // LDS destination address
-        //     bytes_per_load,                                      // Size in bytes (16)
-        //     offset_bytes,                                        // VOffset (byte offset from src_ptr)
-        //     0,                                                   // SOffset
-        //     0,                                                   // Offset (immediate)
-        //     0                                                    // Aux (cache coherency)
-        // );
-
-        // IMPORTANT: no HipKittens CDNA3 equivalent.
-        __builtin_amdgcn_raw_ptr_buffer_load_lds(
-            srd,
-            reinterpret_cast<as3_uint32_ptr>(dst_ptr + offset_elems),
-            bytes_per_load,
-            offset_bytes,
-            0,
-            0,
-            0
-        );
-
-        // Note: No 'cp.async.commit_group' needed on AMD. The async actions
-        // are already on their way once issued.
-        // Make sure to call a synchrnous wait later to ensure completion.
+        // everything should fit!
+        asm volatile(
+            "cp.async.cg.shared.global.L2::128B [%0], [%1], 16;\n" ::"r"(
+                dst.idx(dst_ptr, {row, col})),
+            "l"(&src_ptr[row * LLAMA_1B_HEAD_DIM + col])
+            : "memory");
+        asm volatile("cp.async.commit_group;\n" ::: "memory");
     }
 
     struct controller {
