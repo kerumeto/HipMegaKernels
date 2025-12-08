@@ -6,20 +6,41 @@
 namespace kittens {
     // Simple semaphore wrapper for HIP
     struct hip_semaphore {
-        volatile int* count; // shared memory location
+        volatile int count; // shared memory location. must own the memory. megakernel.cuh instantiates the semaphore objects but NOT their ptrs.
+
+        // Member function implementation
+        __device__ inline void init(int val) {
+            if (threadIdx.x == 0) {
+                count = val;
+            }
+            __syncthreads();
+        }
+
+        __device__ inline void wait(int val) {
+            while (count < val) {
+                __builtin_amdgcn_s_sleep(1); 
+            }
+            __threadfence_block(); 
+        }
+
+        __device__ inline void arrive(int val = 1) {
+            __builtin_amdgcn_s_waitcnt(0); 
+            __threadfence_block();
+            atomicAdd((int*)&count, val);
+        }
     };
 
     // Initialize/Reset semaphore
     __device__ inline void init_semaphore(hip_semaphore& sem, int val) {
         if (threadIdx.x == 0) {
-            *sem.count = val;
+            sem.count = val;
         }
         __syncthreads();
     }
 
     // Wait until semaphore reaches value
     __device__ inline void wait(hip_semaphore& sem, int val) {
-        while (*sem.count < val) {
+        while (sem.count < val) {
             __builtin_amdgcn_s_sleep(1); // Sleep for 64 cycles (optimized)
         }
         __threadfence_block(); // Ensure visibility
@@ -31,7 +52,7 @@ namespace kittens {
         __builtin_amdgcn_s_waitcnt(0); 
         __threadfence_block();
 
-        atomicAdd((int*)sem.count, val);
+        atomicAdd((int*)&sem.count, val);
     }
 
     // Warp namespace aliases/utilities
